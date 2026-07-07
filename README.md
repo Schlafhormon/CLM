@@ -1,29 +1,81 @@
 # CLM
 
-CLM is a Python-based orchestration tool for container live migration with
-CRIU and runc. It coordinates source, destination, and monitoring hosts,
-executes pre-copy and post-copy migrations, records client-visible behavior,
-and analyzes the resulting run artifacts.
+CLM is intended to become a practical Python orchestration tool for live
+migration of containers with CRIU. The long-term goal is to migrate containers
+running different kinds of applications across hosts with a simple operator
+workflow, strong preflight checks, useful monitoring, and clear migration
+artifacts.
 
-This repository is the standalone continuation of the CLM tool. It was split
-out of the broader `ContainerLiveMigration` research repository so CLM can
-evolve as an operational CRIU orchestration project without carrying paper
-results, historical archives, or local measurement data.
+The current codebase was extracted from a container live migration research
+repository. It already contains working CRIU/runc migration orchestration,
+monitoring, and analysis code, but it still carries assumptions from that
+research environment. This repository is where CLM should evolve into a
+standalone tool.
 
-## Current Scope
+## Vision
 
-- Pre-copy migration orchestration with final dump, restore, VIP cutover, and
+CLM should provide a clean orchestration layer around CRIU:
+
+- Support container live migration for multiple runtimes, not only `runc`.
+  Docker, containerd, and Podman support are explicit future targets.
+- Avoid requiring the full CLM repository to be checked out on every host.
+  Source and destination hosts should eventually need only a small deployed
+  helper, generated scripts, or a packaged runtime component.
+- Keep CRIU as the migration engine while making the orchestration around it
+  easier, safer, and faster.
+- Improve pre-copy and post-copy migration paths, especially for containers
+  under active load.
+- Provide reliable preflight validation before touching a running container.
+- Provide clear operational monitoring and diagnostics without forcing a
+  research-style measurement campaign.
+- Keep analysis useful, but simplify it toward operator-facing summaries,
+  timelines, and troubleshooting output.
+- Remove built-in workload simulation code from the core tool. Test workloads
+  belong in examples or integration tests, not in the orchestration path.
+
+CRIU itself may need upstream contributions or a dedicated fork for deeper
+improvements. CLM should be designed so such CRIU-level work can be integrated
+without coupling the whole project to one patched CRIU build.
+
+## Current Status
+
+CLM currently works as an extracted research tool:
+
+- The implemented migration backend targets `runc`.
+- The same repository path is expected to exist on monitor, source, and
+  destination hosts.
+- Pre-copy orchestration supports final dump, restore, VIP cutover, and
   cleanup.
-- Post-copy migration orchestration with CRIU lazy pages, destination
-  readiness checks, optional source forwarding, warmup, VIP cutover, and
-  cleanup.
-- External monitoring for HTTP, L4 TCP, counters, info endpoints, streams,
-  downloads, uploads, and workload latency.
-- Repeatable batches with run metadata, status files, event logs, config
+- Post-copy orchestration supports CRIU lazy pages, destination readiness
+  checks, optional source forwarding, warmup, VIP cutover, and cleanup.
+- Monitoring records HTTP, L4 TCP, counters, info endpoints, streams,
+  downloads, uploads, and latency-related data.
+- Batch execution stores run metadata, status files, event logs, config
   snapshots, and per-run summaries.
-- Batch analysis and plot generation for downtime, latency, transfer, stream,
-  download, and upload metrics.
-- A small Flask workload used to exercise migrated services.
+- Analysis can generate metrics, summary statistics, downtime segments, and
+  plots.
+- Research load profiles and the Flask workload are still present as legacy
+  artifacts and should be moved out of the core path over time.
+
+## Direction
+
+Near-term development should move CLM from "research runner" to "migration
+orchestrator":
+
+- Introduce runtime backends for `runc`, Docker, containerd, and later Podman.
+- Split host orchestration, CRIU operations, network cutover, monitoring, and
+  analysis into smaller modules with stable interfaces.
+- Replace remote "repo must exist" assumptions with deployable host-side
+  helpers or generated command bundles.
+- Make preflight checks structured, machine-readable, and actionable.
+- Reduce the default CLI to the common operator workflow: inspect, preflight,
+  migrate, monitor, summarize.
+- Move research workloads, synthetic load generation, and paper-oriented plots
+  to examples, integration tests, or a separate research add-on.
+- Keep raw artifact capture available for debugging, but make the normal
+  result concise.
+- Add dry-run plans for migrations and remote commands.
+- Add integration tests around generated migration plans and backend behavior.
 
 ## Repository Layout
 
@@ -37,7 +89,7 @@ scripts/                     runc bundle, migration, cleanup, hostinfo, forensic
 tools/monitor/monitor.py     Runtime monitor and single-run analyzer
 tools/analyze.py             Standalone batch analysis wrapper
 tools/plots.py               Standalone plot wrapper
-workload/flask_app/app.py    Test workload used by the migration scripts
+workload/flask_app/app.py    Legacy research workload, to be moved out later
 tests/                       Unit tests for orchestration, batching, analysis, monitor logic
 docs/                        Operational documentation copied from the research repo
 ```
@@ -48,7 +100,8 @@ local ignored directories.
 
 ## Requirements
 
-The orchestration runs against Linux hosts. Source and destination hosts need:
+The current implementation runs against Linux hosts. Source and destination
+hosts currently need:
 
 - `runc`
 - `criu`
@@ -61,8 +114,11 @@ The orchestration runs against Linux hosts. Source and destination hosts need:
 The monitoring host needs:
 
 - Python 3.9 or newer
-- `wrk` for the `wrk1`, `wrk2`, and `wrk3` load profiles
+- `wrk` only for the legacy `wrk1`, `wrk2`, and `wrk3` load profiles
 - access to source and destination hosts over SSH
+
+These requirements are expected to change as CLM gains packaged host helpers
+and runtime backends beyond `runc`.
 
 ## Installation
 
@@ -82,7 +138,7 @@ Edit `config/env.yaml` for your lab:
 - `container`: runc container name, image, bundle path, and Gunicorn sizing
 - `migration`, `precopy`, `postcopy`: method-specific runtime settings
 - `monitor`: probe intervals, timeouts, burst behavior, and target families
-- `load`: workload profiles
+- `load`: legacy research workload profiles
 
 ## Preflight
 
@@ -121,8 +177,10 @@ clm run --env config/env.yaml --method postcopy --load wrk2,download --repeats 5
 clm run --env config/env.yaml --method postcopy --load stream --load upload
 ```
 
-Supported profiles are `idle`, `cpu`, `wrk1`, `wrk2`, `wrk3`, `download`,
-`upload`, and `stream`. `heavy` is kept as a compatibility alias for `cpu`.
+Supported legacy profiles are `idle`, `cpu`, `wrk1`, `wrk2`, `wrk3`,
+`download`, `upload`, and `stream`. `heavy` is kept as a compatibility alias
+for `cpu`. These profiles came from the research setup and are not intended to
+remain part of the core orchestrator.
 
 Useful run switches:
 
@@ -134,6 +192,11 @@ clm run --env config/env.yaml --method postcopy --no-cleanup
 ```
 
 ## Analysis
+
+Analysis is currently batch-oriented and still reflects the research origin of
+the tool. The target direction is a simpler operator-facing analysis layer:
+summaries, downtime timelines, warnings, and links to raw artifacts when deeper
+debugging is needed.
 
 Analyze the newest batch:
 
@@ -179,11 +242,16 @@ Near-term hardening work should focus on:
 
 - separating host orchestration, CRIU operations, network cutover, monitoring,
   and analysis into smaller modules;
+- defining runtime backend interfaces for `runc`, Docker, containerd, and
+  Podman;
 - replacing script-string assembly with typed command builders where possible;
+- removing the requirement that the whole repo exists on every target host;
 - adding structured preflight result objects and machine-readable diagnostics;
 - adding packaging metadata for optional analysis dependencies;
 - adding integration tests around dry-run plans and generated remote scripts;
-- defining stable extension points for new migration strategies and monitors.
+- defining stable extension points for migration strategies, runtime backends,
+  network cutover modes, and monitors;
+- moving synthetic load generation out of the core package.
 
 ## Documentation
 

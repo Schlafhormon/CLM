@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local configuration
+config/env.yaml
+
+# Runtime output
+Logs/
+logs/
+outputs/
+out/
+results/
+runs/
+plots/
+*.log
+*.pid
+*.ndjson
+
+# Runtime artifacts
+runc-bundle/
+scripts/hostinfo/
+tests/testläufe/
+tests/testruns/

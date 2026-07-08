@@ -326,24 +326,9 @@ def probes_from_legacy_env(config: dict[str, Any]) -> list[ProbeSpec]:
 
 
 def _probe_from_mapping(value: Any) -> ProbeSpec:
-    if not isinstance(value, dict):
-        raise ValueError("probe entries must be mappings")
-    cfg = deepcopy(value)
-    probe_type = str(cfg.pop("type", cfg.pop("kind", "http")))
-    return ProbeSpec(
-        name=str(cfg.pop("name", probe_type)),
-        type=probe_type,
-        target=cfg.pop("target", None),
-        url=cfg.pop("url", None),
-        host=cfg.pop("host", None),
-        port=_optional_int(cfg.pop("port", None)),
-        command=_command_tuple(cfg.pop("command", ())),
-        interval_ms=_optional_int(cfg.pop("interval_ms", None)),
-        timeout_ms=_optional_int(cfg.pop("timeout_ms", None)),
-        required=_as_bool(cfg.pop("required", False)),
-        expected_status=_optional_int(cfg.pop("expected_status", None)),
-        metadata=cfg,
-    )
+    from clm.monitoring.probes import parse_probe_spec
+
+    return parse_probe_spec(value).to_core_probe_spec()
 
 
 def _strategy_from_method(method: Optional[str]) -> str:

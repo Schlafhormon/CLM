@@ -33,6 +33,7 @@ from clm.batching import (
     utc_now_iso as batch_now_iso,
 )
 from clm.host import LocalExecutor, SshExecutor
+from clm.migration.storage import CleanupPolicy, artifact_paths_for
 
 try:
     import yaml
@@ -1160,31 +1161,27 @@ def collect_clock_offsets(cfg: dict, *, samples: int = 3) -> dict:
 
 
 def _policy_allows_cleanup(policy: str, *, run_ok: bool) -> bool:
-    mode = str(policy or "success_only").strip().lower()
-    if mode == "always":
-        return True
-    if mode in ("success_only", "on_success"):
-        return bool(run_ok)
-    return False
+    return CleanupPolicy(
+        shared_images_policy=policy,
+        local_images_policy=policy,
+    ).allows_artifact_cleanup("shared", run_ok=run_ok)
 
 
 def _checkpoint_artifact_paths(cfg: dict, *, method: str, run_id: str) -> tuple[str, str, str]:
     # Build checkpoint artifact paths.
-    cp_name = checkpoint_name_for_run(method, run_id)
-    share_root = str((cfg.get("paths") or {}).get("share_root") or "/mnt/criu").rstrip("/")
-    container_name = str((cfg.get("container") or {}).get("name") or "testweb")
-    shared_path = f"{share_root}/runc/{container_name}/{cp_name}"
-    local_path = f"/var/lib/criu-local/runc/{container_name}/{cp_name}"
-    return cp_name, shared_path, local_path
+    paths = artifact_paths_for(cfg, method=method, run_id=run_id)
+    return paths.checkpoint_name, paths.shared_checkpoint_path, paths.destination_checkpoint_path
 
 
 def cleanup_skipped_checkpoint_artifacts(cfg: dict, *, method: str, run_id: str, reason: str) -> dict:
     # Clean up skipped checkpoint artifacts.
     cp_name, shared_path, local_path = _checkpoint_artifact_paths(cfg, method=method, run_id=run_id)
+    policy = CleanupPolicy.from_config(cfg)
     return {
         "skipped": True,
         "reason": reason,
         "cp_name": cp_name,
+        "policy": policy.describe(),
         "shared": {
             "policy": "skipped",
             "path": shared_path,
@@ -1202,9 +1199,9 @@ def cleanup_skipped_checkpoint_artifacts(cfg: dict, *, method: str, run_id: str,
 
 def cleanup_run_checkpoint_artifacts(cfg: dict, *, method: str, run_id: str, run_status: str) -> dict:
     # Clean up run checkpoint artifacts.
-    cleanup_cfg = cfg.get("cleanup") or {}
-    shared_policy = str(cleanup_cfg.get("shared_images_policy", "success_only"))
-    local_policy = str(cleanup_cfg.get("local_images_policy", "success_only"))
+    policy = CleanupPolicy.from_config(cfg)
+    shared_policy = policy.shared_images_policy
+    local_policy = policy.local_images_policy
     run_ok = str(run_status) == "ok"
 
     cp_name, shared_path, local_path = _checkpoint_artifact_paths(cfg, method=method, run_id=run_id)
@@ -1212,6 +1209,7 @@ def cleanup_run_checkpoint_artifacts(cfg: dict, *, method: str, run_id: str, run
     result = {
         "run_status": run_status,
         "cp_name": cp_name,
+        "policy": policy.describe(),
         "shared": {
             "policy": shared_policy,
             "path": shared_path,
@@ -1226,7 +1224,7 @@ def cleanup_run_checkpoint_artifacts(cfg: dict, *, method: str, run_id: str, run
         },
     }
 
-    if _policy_allows_cleanup(shared_policy, run_ok=run_ok):
+    if policy.allows_artifact_cleanup("shared", run_ok=run_ok):
         src = host_alias(cfg, "source")
         if src:
             result["shared"]["attempted"] = True
@@ -1242,7 +1240,7 @@ def cleanup_run_checkpoint_artifacts(cfg: dict, *, method: str, run_id: str, run
             if res.returncode != 0:
                 result["shared"]["error"] = (res.stderr or res.stdout or "").strip()
 
-    if _policy_allows_cleanup(local_policy, run_ok=run_ok):
+    if policy.allows_artifact_cleanup("local", run_ok=run_ok):
         dst = host_alias(cfg, "dest")
         if dst:
             result["local"]["attempted"] = True

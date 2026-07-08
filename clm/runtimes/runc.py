@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from clm.core.models import MigrationResult, PreflightResult
+from clm.migration.storage import transfer_plan_for
 from clm.migration.traffic import select_traffic_backend
 from clm.runtimes.base import RuntimeBackend, RuntimeInspection
 
@@ -64,6 +65,23 @@ class RuncBackend(RuntimeBackend):
 
         started_at = datetime.now(timezone.utc)
         src = legacy_cli.host_alias(config, "source")
+        transfer = transfer_plan_for(config, method=method, run_id=run_id)
+        if not transfer.implemented:
+            message = transfer.warnings[0] if transfer.warnings else f"{transfer.mode} transfer is not implemented"
+            return MigrationResult(
+                migration_id=run_id,
+                status="failed",
+                started_at=started_at,
+                ended_at=datetime.now(timezone.utc),
+                errors=(message,),
+                artifacts={
+                    "events_log": events_log,
+                    "migrate_log": migrate_log,
+                    "returncode": 2,
+                    "transfer_mode": transfer.mode,
+                    "transfer_implemented": False,
+                },
+            )
         script = self.build_legacy_migration_script(
             config,
             method=method,
@@ -99,6 +117,7 @@ class RuncBackend(RuntimeBackend):
         post = cfg["postcopy"]
         migration = cfg.get("migration", {})
         precopy = cfg.get("precopy", {})
+        transfer = transfer_plan_for(cfg, method=method, run_id=run_id)
         health_url_dst = f"http://{dst_ip}:{port}/health"
         readiness_urls = legacy_cli._normalize_url_list(post.get("readiness_urls")) or [health_url_dst]
         warmup_urls = legacy_cli._normalize_url_list(post.get("warmup_urls")) or [
@@ -114,9 +133,9 @@ class RuncBackend(RuntimeBackend):
             "CP_NAME": legacy_cli.checkpoint_name_for_run(method, run_id),
             "RUNC_BUNDLE_SRC": container["bundle"],
             "RUNC_BUNDLE_DST": container["bundle"],
-            "SRC_NFS_ROOT": cfg["paths"]["share_root"],
-            "REMOTE_NFS_ROOT": cfg["paths"]["share_root"],
-            "DST_LOCAL_ROOT": "/var/lib/criu-local",
+            "SRC_NFS_ROOT": transfer.source_root,
+            "REMOTE_NFS_ROOT": transfer.remote_root,
+            "DST_LOCAL_ROOT": transfer.destination_root,
             "DST_HOST": dst_ip,
             "DST_USER": dst_user,
             "HEALTH_URL_DST": health_url_dst,
@@ -126,7 +145,7 @@ class RuncBackend(RuntimeBackend):
             "EVENTS_LOG": events_log,
             "TCP_EST": precopy.get("tcp_established", 1),
             "PRE_DUMP_ROUNDS": precopy.get("pre_dump_rounds", 0),
-            "PRECOPY_IMAGE_MODE": precopy.get("image_mode", "shared"),
+            "PRECOPY_IMAGE_MODE": transfer.precopy_image_mode,
         }
         env_vars.update(traffic_env)
         if method == "postcopy":

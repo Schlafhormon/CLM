@@ -82,7 +82,7 @@ class RuntimeBackendMigrationTests(unittest.TestCase):
         self.assertEqual(captured["host"], "benke1")
         self.assertIn("export MODE=runc", captured["script"])
         self.assertIn("export TRAFFIC_MODE=vip", captured["script"])
-        self.assertIn("bash \"$REPO/scripts/migrate_precopy_vip_cutover.sh\"", captured["script"])
+        self.assertIn("bash \"$REPO/scripts/migrate_precopy.sh\"", captured["script"])
 
     def test_runc_backend_exports_command_traffic_hooks(self):
         cfg = deepcopy(cli.DEFAULTS)
@@ -104,11 +104,12 @@ class RuntimeBackendMigrationTests(unittest.TestCase):
         )
 
         self.assertIn("export TRAFFIC_MODE=command", script)
+        self.assertIn("export TRAFFIC_PORT=8080", script)
         self.assertIn("export TRAFFIC_PREPARE_CMD='lbctl drain source'", script)
         self.assertIn("export TRAFFIC_SWITCH_CMD='lbctl activate dest'", script)
         self.assertIn("export TRAFFIC_VERIFY_CMD='curl -fsS http://service/health'", script)
-        self.assertNotIn("export VIP_ADDR", script)
-        self.assertNotIn("export VIP_IF_SRC", script)
+        for vip_env in ("VIP_ADDR", "VIP_CIDR", "VIP_IF_SRC", "VIP_IF_DST", "VIP_PORT", "VIP_CONNTRACK_CLEAR_SRC"):
+            self.assertNotIn(f"export {vip_env}", script)
 
     def test_runc_backend_external_traffic_does_not_export_vip_cutover_env(self):
         cfg = deepcopy(cli.DEFAULTS)
@@ -126,9 +127,10 @@ class RuntimeBackendMigrationTests(unittest.TestCase):
         )
 
         self.assertIn("export TRAFFIC_MODE=external", script)
+        self.assertIn("export TRAFFIC_PORT=8080", script)
         self.assertIn("export TRAFFIC_VERIFY_CMD='curl -fsS http://service/health'", script)
-        self.assertNotIn("export VIP_ADDR", script)
-        self.assertNotIn("export VIP_CONNTRACK_CLEAR_SRC", script)
+        for vip_env in ("VIP_ADDR", "VIP_CIDR", "VIP_IF_SRC", "VIP_IF_DST", "VIP_PORT", "VIP_CONNTRACK_CLEAR_SRC"):
+            self.assertNotIn(f"export {vip_env}", script)
 
     def test_docker_migration_fails_fast(self):
         cfg = deepcopy(cli.DEFAULTS)
@@ -167,6 +169,76 @@ class RuntimeBackendMigrationTests(unittest.TestCase):
         self.assertTrue(containerd.preflight().ok)
         self.assertEqual(containerd.inspect("web").status, "placeholder")
         self.assertFalse(containerd.inspect("web").details["migration_supported"])
+
+
+class RuncMigrationScriptTests(unittest.TestCase):
+    scripts = (
+        Path("scripts/migrate_precopy_vip_cutover.sh"),
+        Path("scripts/migrate_postcopy_lazy_pages_vip_cutover.sh"),
+    )
+    blocked_segments = ("ip addr add", "ip addr del", "conntrack -D", "arping")
+
+    def test_neutral_entrypoint_wrappers_delegate_to_legacy_scripts(self):
+        wrappers = {
+            Path("scripts/migrate_precopy.sh"): "migrate_precopy_vip_cutover.sh",
+            Path("scripts/migrate_postcopy_lazy_pages.sh"): "migrate_postcopy_lazy_pages_vip_cutover.sh",
+        }
+
+        for wrapper, legacy_name in wrappers.items():
+            text = wrapper.read_text(encoding="utf-8")
+            self.assertIn(legacy_name, text)
+
+    def test_external_and_command_traffic_cases_do_not_run_vip_side_effects(self):
+        for script in self.scripts:
+            text = script.read_text(encoding="utf-8")
+            for function in ("traffic_prepare", "traffic_switch", "traffic_verify"):
+                body = _bash_function_body(text, function)
+                for mode in ("external", "command"):
+                    arm = _traffic_mode_case_arm(body, mode)
+                    for segment in self.blocked_segments:
+                        self.assertNotIn(segment, arm, f"{script}:{function}:{mode} contains {segment}")
+
+
+def _bash_function_body(script: str, name: str) -> str:
+    marker = f"{name}()"
+    start = script.find(marker)
+    if start < 0:
+        marker = f"{name}(){{"
+        start = script.find(marker)
+    if start < 0:
+        raise AssertionError(f"missing bash function {name}")
+    brace_start = script.find("{", start)
+    end = script.find("\n}", brace_start)
+    if end >= 0:
+        return script[brace_start + 1 : end]
+    raise AssertionError(f"unterminated bash function {name}")
+
+
+def _traffic_mode_case_arm(function_body: str, mode: str) -> str:
+    lines = function_body.splitlines()
+    in_case = False
+    capture = False
+    captured: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped == 'case "$TRAFFIC_MODE" in':
+            in_case = True
+            continue
+        if not in_case:
+            continue
+        if stripped.endswith(")") and not stripped.startswith(("if ", "for ", "while ")):
+            labels = stripped[:-1].split("|")
+            if capture:
+                break
+            capture = mode in labels
+            continue
+        if capture:
+            if stripped == ";;":
+                break
+            captured.append(line)
+    if not captured:
+        raise AssertionError(f"missing TRAFFIC_MODE={mode} arm")
+    return "\n".join(captured)
 
 
 if __name__ == "__main__":

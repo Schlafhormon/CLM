@@ -33,7 +33,10 @@ class RuncBackend(RuntimeBackend):
                     "detail": container.get("bundle") or "missing container.bundle",
                 },
             ),
-            metadata={"legacy_scripts": self.legacy_script_names()},
+            metadata={
+                "migration_scripts": self.migration_script_names(),
+                "legacy_scripts": self.legacy_script_names(),
+            },
         )
 
     def inspect(
@@ -49,6 +52,7 @@ class RuncBackend(RuntimeBackend):
                 "container_id": container_id or container.get("name"),
                 "bundle": container.get("bundle"),
                 "migration_supported": True,
+                "migration_scripts": self.migration_script_names(),
                 "legacy_scripts": self.legacy_script_names(),
             },
         )
@@ -140,6 +144,7 @@ class RuncBackend(RuntimeBackend):
             "DST_HOST": dst_ip,
             "DST_USER": dst_user,
             "HEALTH_URL_DST": health_url_dst,
+            "TRAFFIC_PORT": port,
             "NET_MODE": migration.get("net_mode", "host"),
             "CONTAINER_IP_DST": migration.get("container_ip_dest", "172.18.0.5"),
             "LOG_DIR": cfg["paths"]["logs_root"],
@@ -172,8 +177,15 @@ class RuncBackend(RuntimeBackend):
                 }
             )
 
-        script_name = f"migrate_{'precopy' if method == 'precopy' else 'postcopy_lazy_pages'}_vip_cutover.sh"
+        script_name = f"migrate_{'precopy' if method == 'precopy' else 'postcopy_lazy_pages'}.sh"
         return legacy_cli.build_remote_script(env_vars, [f"bash \"$REPO/scripts/{script_name}\""])
+
+    @staticmethod
+    def migration_script_names() -> tuple[str, str]:
+        return (
+            "scripts/migrate_precopy.sh",
+            "scripts/migrate_postcopy_lazy_pages.sh",
+        )
 
     @staticmethod
     def legacy_script_names() -> tuple[str, str]:

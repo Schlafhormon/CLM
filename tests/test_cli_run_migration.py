@@ -366,7 +366,7 @@ class RunMigrationTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(captured["host"], "benke1")
         self.assertIn("export PRECOPY_IMAGE_MODE=shared", captured["script"])
-        self.assertIn("bash \"$REPO/scripts/migrate_precopy_vip_cutover.sh\"", captured["script"])
+        self.assertIn("bash \"$REPO/scripts/migrate_precopy.sh\"", captured["script"])
 
     def test_precopy_run_migration_exports_local_copy_override(self):
         cfg = deepcopy(cli.DEFAULTS)

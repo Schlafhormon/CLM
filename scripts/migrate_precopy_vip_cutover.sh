@@ -39,6 +39,7 @@ VIP_CIDR="${VIP_CIDR:-/24}"
 VIP_IF_SRC="${VIP_IF_SRC:-ensX}"
 VIP_IF_DST="${VIP_IF_DST:-ensX}"
 VIP_PORT="${VIP_PORT:-8080}"
+TRAFFIC_PORT="${TRAFFIC_PORT:-$VIP_PORT}"
 VIP_GARP_COUNT="${VIP_GARP_COUNT:-3}"
 VIP_GARP_INTERVAL_MS="${VIP_GARP_INTERVAL_MS:-200}"
 VIP_GARP_MODE="${VIP_GARP_MODE:-A}"
@@ -305,7 +306,7 @@ traffic_hook_run() {
 
 traffic_prepare() {
   local prep_start prep_end
-  emit_event traffic_prepare_start mode="$TRAFFIC_MODE" net_mode=$NET_MODE vip="$VIP_ADDR" port="$VIP_PORT"
+  emit_event traffic_prepare_start mode="$TRAFFIC_MODE" net_mode=$NET_MODE port="$TRAFFIC_PORT"
   prep_start="$(ms)"
   case "$TRAFFIC_MODE" in
     vip)
@@ -323,13 +324,12 @@ traffic_prepare() {
       ;;
   esac
   prep_end="$(ms)"
-  emit_event traffic_prepare_done mode="$TRAFFIC_MODE" net_mode=$NET_MODE vip="$VIP_ADDR" port="$VIP_PORT" dur_ms=$((prep_end - prep_start))
+  emit_event traffic_prepare_done mode="$TRAFFIC_MODE" net_mode=$NET_MODE port="$TRAFFIC_PORT" dur_ms=$((prep_end - prep_start))
 }
 
 traffic_switch() {
   local src_conntrack_cleared
-  emit_event traffic_switch_start mode="$TRAFFIC_MODE" garp_mode=$VIP_GARP_MODE garp_count=$VIP_GARP_COUNT \
-    garp_interval_ms=$VIP_GARP_INTERVAL_MS conntrack_clear_src=$VIP_CONNTRACK_CLEAR_SRC
+  emit_event traffic_switch_start mode="$TRAFFIC_MODE"
   case "$TRAFFIC_MODE" in
     vip)
       emit_event vip_cutover_start garp_mode=$VIP_GARP_MODE garp_count=$VIP_GARP_COUNT \
@@ -397,10 +397,12 @@ fi
 log "RUN_ID=$RUN_ID | Events -> $EVENTS_LOG"
 emit_event script_start mode=$MODE name=$NAME run_id=$RUN_ID
 emit_event precopy_image_path_mode mode=$PRECOPY_IMAGE_MODE_NORM restore_images_base="$RESTORE_IMAGES_BASE"
-emit_event traffic_config mode=$TRAFFIC_MODE
-emit_event vip_cutover_config \
-  garp_count=$VIP_GARP_COUNT garp_interval_ms=$VIP_GARP_INTERVAL_MS garp_mode=$VIP_GARP_MODE \
-  conntrack_clear_src=$VIP_CONNTRACK_CLEAR_SRC conntrack_clear_dst=1
+emit_event traffic_config mode=$TRAFFIC_MODE port="$TRAFFIC_PORT" net_mode="$NET_MODE"
+if [ "$TRAFFIC_MODE" = "vip" ]; then
+  emit_event vip_cutover_config \
+    garp_count=$VIP_GARP_COUNT garp_interval_ms=$VIP_GARP_INTERVAL_MS garp_mode=$VIP_GARP_MODE \
+    conntrack_clear_src=$VIP_CONNTRACK_CLEAR_SRC conntrack_clear_dst=1
+fi
 
 [ "$MODE" = "runc" ] || fail "Nur MODE=runc (Docker unterstützt kein Pre-Copy)."
 command -v criu >/dev/null || fail "criu fehlt auf Quelle (benke1)"
@@ -425,7 +427,7 @@ SRC_STATUS="$($RUNC_BIN $RUNC_ROOT state "$NAME" | awk -F\" '/\"status\":/ {prin
 [ "$SRC_STATUS" = "running" ] || log "Hinweis: status=$SRC_STATUS (Pre-Dump sinnvoll im laufenden Zustand)."
 
 log "Portkollisionen benke2 (Info)…"
-$SSH "ss -tulpn | grep -E ':${VIP_PORT}\\b' || true"
+$SSH "ss -tulpn | grep -E ':${TRAFFIC_PORT}\\b' || true"
 
 traffic_prepare
 cleanup_stale_dest_container
@@ -529,12 +531,31 @@ for i in $(seq 1 120); do
 done
 [[ "$t_up" -gt 0 ]] || fail "Health wurde auf benke2 nicht OK"
 
-emit_event summary mode=$MODE name=$NAME cp=$CP_NAME pre_rounds=$PRE_DUMP_ROUNDS tcp_est=$TCP_EST \
-  images_src="$IMAGES_BASE_SRC" images_dst="$IMAGES_BASE_DST" restore_images_base="$RESTORE_IMAGES_BASE" \
-  precopy_image_mode="$PRECOPY_IMAGE_MODE_NORM" bundle_dst="$RUNC_BUNDLE_DST" \
-  traffic_mode="$TRAFFIC_MODE" vip="$VIP_ADDR" net_mode="$NET_MODE" vip_garp_count=$VIP_GARP_COUNT \
-  vip_garp_interval_ms=$VIP_GARP_INTERVAL_MS vip_garp_mode=$VIP_GARP_MODE \
-  vip_conntrack_clear_src=$VIP_CONNTRACK_CLEAR_SRC
+summary_fields=(
+  mode=$MODE
+  name=$NAME
+  cp=$CP_NAME
+  pre_rounds=$PRE_DUMP_ROUNDS
+  tcp_est=$TCP_EST
+  images_src="$IMAGES_BASE_SRC"
+  images_dst="$IMAGES_BASE_DST"
+  restore_images_base="$RESTORE_IMAGES_BASE"
+  precopy_image_mode="$PRECOPY_IMAGE_MODE_NORM"
+  bundle_dst="$RUNC_BUNDLE_DST"
+  traffic_mode="$TRAFFIC_MODE"
+  traffic_port="$TRAFFIC_PORT"
+  net_mode="$NET_MODE"
+)
+if [ "$TRAFFIC_MODE" = "vip" ]; then
+  summary_fields+=(
+    vip="$VIP_ADDR"
+    vip_garp_count=$VIP_GARP_COUNT
+    vip_garp_interval_ms=$VIP_GARP_INTERVAL_MS
+    vip_garp_mode=$VIP_GARP_MODE
+    vip_conntrack_clear_src=$VIP_CONNTRACK_CLEAR_SRC
+  )
+fi
+emit_event summary "${summary_fields[@]}"
 
 echo "---- PHASE4 PRECOPY MARKER ----"
 for ((i=1; i<=PRE_DUMP_ROUNDS; i++)); do
@@ -555,8 +576,11 @@ echo "images_dst=$IMAGES_BASE_DST"
 echo "restore_images_base=$RESTORE_IMAGES_BASE"
 echo "bundle_src=$RUNC_BUNDLE_SRC"
 echo "bundle_dst=$RUNC_BUNDLE_DST"
-echo "vip=${VIP_ADDR}${VIP_CIDR} net_mode=$NET_MODE"
+echo "traffic_mode=$TRAFFIC_MODE traffic_port=$TRAFFIC_PORT net_mode=$NET_MODE"
+if [ "$TRAFFIC_MODE" = "vip" ]; then
+  echo "vip=${VIP_ADDR}${VIP_CIDR}"
+fi
 echo "-------------------------------"
 
-log "Pre-Copy Migration + VIP Cutover abgeschlossen."
+log "Pre-Copy Migration + Traffic Switch abgeschlossen."
 emit_event script_done

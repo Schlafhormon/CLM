@@ -34,6 +34,7 @@ VIP_CIDR="${VIP_CIDR:-/24}"
 VIP_IF_SRC="${VIP_IF_SRC:-enp1s0}"
 VIP_IF_DST="${VIP_IF_DST:-enp1s0}"
 VIP_PORT="${VIP_PORT:-8080}"
+TRAFFIC_PORT="${TRAFFIC_PORT:-$VIP_PORT}"
 VIP_GARP_COUNT="${VIP_GARP_COUNT:-3}"
 VIP_GARP_INTERVAL_MS="${VIP_GARP_INTERVAL_MS:-200}"
 VIP_GARP_MODE="${VIP_GARP_MODE:-A}"
@@ -44,19 +45,19 @@ TRAFFIC_SWITCH_CMD="${TRAFFIC_SWITCH_CMD:-}"
 TRAFFIC_VERIFY_CMD="${TRAFFIC_VERIFY_CMD:-}"
 TRAFFIC_ROLLBACK_CMD="${TRAFFIC_ROLLBACK_CMD:-}"
 CONTAINER_IP_DST="${CONTAINER_IP_DST:-172.18.0.5}"
-POSTCOPY_READINESS_URLS="${POSTCOPY_READINESS_URLS:-http://${DST_HOST}:${VIP_PORT}/health}"
+POSTCOPY_READINESS_URLS="${POSTCOPY_READINESS_URLS:-http://${DST_HOST}:${TRAFFIC_PORT}/health}"
 POSTCOPY_READINESS_STABLE_SUCCESSES="${POSTCOPY_READINESS_STABLE_SUCCESSES:-0}"
 POSTCOPY_READINESS_INTERVAL_MS="${POSTCOPY_READINESS_INTERVAL_MS:-200}"
 POSTCOPY_READINESS_TIMEOUT_MS="${POSTCOPY_READINESS_TIMEOUT_MS:-0}"
 POSTCOPY_PROBE_MAX_TIME_S="${POSTCOPY_PROBE_MAX_TIME_S:-2}"
-POSTCOPY_WARMUP_URLS="${POSTCOPY_WARMUP_URLS:-http://${DST_HOST}:${VIP_PORT}/ready,http://${DST_HOST}:${VIP_PORT}/counter}"
+POSTCOPY_WARMUP_URLS="${POSTCOPY_WARMUP_URLS:-http://${DST_HOST}:${TRAFFIC_PORT}/ready,http://${DST_HOST}:${TRAFFIC_PORT}/counter}"
 POSTCOPY_WARMUP_ROUNDS="${POSTCOPY_WARMUP_ROUNDS:-1}"
 POSTCOPY_WARMUP_INTERVAL_MS="${POSTCOPY_WARMUP_INTERVAL_MS:-0}"
 POSTCOPY_WARMUP_MAX_DURATION_MS="${POSTCOPY_WARMUP_MAX_DURATION_MS:-400}"
 POSTCOPY_SRC_FORWARD_ENABLE="${POSTCOPY_SRC_FORWARD_ENABLE:-0}"
 POSTCOPY_SRC_FORWARD_MODE="${POSTCOPY_SRC_FORWARD_MODE:-iptables_dnat}"
 POSTCOPY_SRC_FORWARD_TARGET_HOST="${POSTCOPY_SRC_FORWARD_TARGET_HOST:-$DST_HOST}"
-POSTCOPY_SRC_FORWARD_TARGET_PORT="${POSTCOPY_SRC_FORWARD_TARGET_PORT:-$VIP_PORT}"
+POSTCOPY_SRC_FORWARD_TARGET_PORT="${POSTCOPY_SRC_FORWARD_TARGET_PORT:-$TRAFFIC_PORT}"
 
 LAZY_PORT="${LAZY_PORT:-27027}"
 SRC_LAZY_IP="${SRC_LAZY_IP:-192.168.13.10}"
@@ -573,7 +574,7 @@ traffic_hook_run(){
 
 traffic_prepare(){
   local prep_start prep_end
-  emit_event traffic_prepare_start mode="$TRAFFIC_MODE" net_mode=$NET_MODE vip="$VIP_ADDR" port="$VIP_PORT"
+  emit_event traffic_prepare_start mode="$TRAFFIC_MODE" net_mode=$NET_MODE port="$TRAFFIC_PORT"
   prep_start="$(ms)"
   case "$TRAFFIC_MODE" in
     vip)
@@ -592,14 +593,12 @@ traffic_prepare(){
       ;;
   esac
   prep_end="$(ms)"
-  emit_event traffic_prepare_done mode="$TRAFFIC_MODE" net_mode=$NET_MODE vip="$VIP_ADDR" port="$VIP_PORT" dur_ms=$((prep_end - prep_start))
+  emit_event traffic_prepare_done mode="$TRAFFIC_MODE" net_mode=$NET_MODE port="$TRAFFIC_PORT" dur_ms=$((prep_end - prep_start))
 }
 
 traffic_switch(){
   local src_conntrack_cleared
-  emit_event traffic_switch_start mode="$TRAFFIC_MODE" garp_mode=$VIP_GARP_MODE garp_count=$VIP_GARP_COUNT \
-    garp_interval_ms=$VIP_GARP_INTERVAL_MS conntrack_clear_src=$VIP_CONNTRACK_CLEAR_SRC \
-    src_forward_active=$SRC_FORWARD_ACTIVE
+  emit_event traffic_switch_start mode="$TRAFFIC_MODE"
   case "$TRAFFIC_MODE" in
     vip)
       emit_event vip_cutover_start garp_mode=$VIP_GARP_MODE garp_count=$VIP_GARP_COUNT \
@@ -682,10 +681,8 @@ trap cleanup INT TERM EXIT
 
 log "RUN_ID=$RUN_ID | Events -> $EVENTS_LOG"
 emit_event script_start mode=$MODE name=$NAME run_id=$RUN_ID
-emit_event traffic_config mode=$TRAFFIC_MODE
-emit_event vip_cutover_config \
-  garp_count=$VIP_GARP_COUNT garp_interval_ms=$VIP_GARP_INTERVAL_MS garp_mode=$VIP_GARP_MODE \
-  conntrack_clear_src=$VIP_CONNTRACK_CLEAR_SRC conntrack_clear_dst=1 \
+emit_event traffic_config mode=$TRAFFIC_MODE port="$TRAFFIC_PORT" net_mode="$NET_MODE"
+emit_event postcopy_config \
   readiness_urls="$POSTCOPY_READINESS_URLS" readiness_stable_successes="$POSTCOPY_READINESS_STABLE_SUCCESSES" \
   readiness_interval_ms="$POSTCOPY_READINESS_INTERVAL_MS" readiness_timeout_ms="$POSTCOPY_READINESS_TIMEOUT_MS" \
   warmup_urls="$POSTCOPY_WARMUP_URLS" warmup_rounds="$POSTCOPY_WARMUP_ROUNDS" \
@@ -693,6 +690,11 @@ emit_event vip_cutover_config \
   warmup_impl=single_remote_batch src_forward_enable="$POSTCOPY_SRC_FORWARD_ENABLE" \
   src_forward_mode="$POSTCOPY_SRC_FORWARD_MODE" src_forward_target_host="$POSTCOPY_SRC_FORWARD_TARGET_HOST" \
   src_forward_target_port="$POSTCOPY_SRC_FORWARD_TARGET_PORT"
+if [ "$TRAFFIC_MODE" = "vip" ]; then
+  emit_event vip_cutover_config \
+    garp_count=$VIP_GARP_COUNT garp_interval_ms=$VIP_GARP_INTERVAL_MS garp_mode=$VIP_GARP_MODE \
+    conntrack_clear_src=$VIP_CONNTRACK_CLEAR_SRC conntrack_clear_dst=1
+fi
 
 [ "$MODE" = "runc" ] || fail "Nur MODE=runc."
 command -v criu >/dev/null || fail "criu fehlt auf Quelle"
@@ -712,7 +714,7 @@ fi
 log "Prüfe Lazy-Port frei (Quelle) …"
 ss -lnt | grep -q ":${LAZY_PORT}\\b" && fail "LAZY_PORT ${LAZY_PORT} belegt"
 log "Portkollisionen Ziel (Info) …"
-$SSH "ss -tulpn | grep -E ':${VIP_PORT}\\b' || true"
+$SSH "ss -tulpn | grep -E ':${TRAFFIC_PORT}\\b' || true"
 
 final_dir="$IMAGES_BASE_SRC/final"
 emit_event checkpoint_start lazy_addr="$SRC_LAZY_ADDR"
@@ -829,16 +831,43 @@ done
 run "$SSH \"if [ -f '$LAZY_PID_FILE' ]; then sudo kill \\\$(cat '$LAZY_PID_FILE') 2>/dev/null || true; fi\""
 emit_event_remote lazy_daemon_stop reason=health_ok
 
-emit_event summary mode=$MODE name=$NAME cp=$CP_NAME tcp_est=$TCP_EST lazy_port=$LAZY_PORT lazy_addr="$SRC_LAZY_ADDR" \
-  images_src="$IMAGES_BASE_SRC" images_dst="$IMAGES_BASE_DST" bundle_dst="$RUNC_BUNDLE_DST" traffic_mode="$TRAFFIC_MODE" vip="$VIP_ADDR" net_mode="$NET_MODE" \
-  vip_garp_count=$VIP_GARP_COUNT vip_garp_interval_ms=$VIP_GARP_INTERVAL_MS vip_garp_mode=$VIP_GARP_MODE \
-  vip_conntrack_clear_src=$VIP_CONNTRACK_CLEAR_SRC readiness_urls="$POSTCOPY_READINESS_URLS" \
-  readiness_stable_successes="$POSTCOPY_READINESS_STABLE_SUCCESSES" readiness_interval_ms="$POSTCOPY_READINESS_INTERVAL_MS" \
-  readiness_timeout_ms="$POSTCOPY_READINESS_TIMEOUT_MS" warmup_urls="$POSTCOPY_WARMUP_URLS" \
-  warmup_rounds="$POSTCOPY_WARMUP_ROUNDS" warmup_interval_ms="$POSTCOPY_WARMUP_INTERVAL_MS" \
-  warmup_max_duration_ms="$POSTCOPY_WARMUP_MAX_DURATION_MS" warmup_impl=single_remote_batch \
-  src_forward_enable="$POSTCOPY_SRC_FORWARD_ENABLE" src_forward_mode="$POSTCOPY_SRC_FORWARD_MODE" \
-  src_forward_target_host="$POSTCOPY_SRC_FORWARD_TARGET_HOST" src_forward_target_port="$POSTCOPY_SRC_FORWARD_TARGET_PORT"
+summary_fields=(
+  mode=$MODE
+  name=$NAME
+  cp=$CP_NAME
+  tcp_est=$TCP_EST
+  lazy_port=$LAZY_PORT
+  lazy_addr="$SRC_LAZY_ADDR"
+  images_src="$IMAGES_BASE_SRC"
+  images_dst="$IMAGES_BASE_DST"
+  bundle_dst="$RUNC_BUNDLE_DST"
+  traffic_mode="$TRAFFIC_MODE"
+  traffic_port="$TRAFFIC_PORT"
+  net_mode="$NET_MODE"
+  readiness_urls="$POSTCOPY_READINESS_URLS"
+  readiness_stable_successes="$POSTCOPY_READINESS_STABLE_SUCCESSES"
+  readiness_interval_ms="$POSTCOPY_READINESS_INTERVAL_MS"
+  readiness_timeout_ms="$POSTCOPY_READINESS_TIMEOUT_MS"
+  warmup_urls="$POSTCOPY_WARMUP_URLS"
+  warmup_rounds="$POSTCOPY_WARMUP_ROUNDS"
+  warmup_interval_ms="$POSTCOPY_WARMUP_INTERVAL_MS"
+  warmup_max_duration_ms="$POSTCOPY_WARMUP_MAX_DURATION_MS"
+  warmup_impl=single_remote_batch
+  src_forward_enable="$POSTCOPY_SRC_FORWARD_ENABLE"
+  src_forward_mode="$POSTCOPY_SRC_FORWARD_MODE"
+  src_forward_target_host="$POSTCOPY_SRC_FORWARD_TARGET_HOST"
+  src_forward_target_port="$POSTCOPY_SRC_FORWARD_TARGET_PORT"
+)
+if [ "$TRAFFIC_MODE" = "vip" ]; then
+  summary_fields+=(
+    vip="$VIP_ADDR"
+    vip_garp_count=$VIP_GARP_COUNT
+    vip_garp_interval_ms=$VIP_GARP_INTERVAL_MS
+    vip_garp_mode=$VIP_GARP_MODE
+    vip_conntrack_clear_src=$VIP_CONNTRACK_CLEAR_SRC
+  )
+fi
+emit_event summary "${summary_fields[@]}"
 
 echo "---- PHASE5 POSTCOPY MARKER ----"
 echo "t_dump_start_ms=$t_dump_start"
@@ -853,8 +882,11 @@ echo "images_src=$IMAGES_BASE_SRC"
 echo "images_dst=$IMAGES_BASE_DST"
 echo "bundle_src=$RUNC_BUNDLE_SRC"
 echo "bundle_dst=$RUNC_BUNDLE_DST"
-echo "vip=${VIP_ADDR}${VIP_CIDR} net_mode=$NET_MODE"
+echo "traffic_mode=$TRAFFIC_MODE traffic_port=$TRAFFIC_PORT net_mode=$NET_MODE"
+if [ "$TRAFFIC_MODE" = "vip" ]; then
+  echo "vip=${VIP_ADDR}${VIP_CIDR}"
+fi
 echo "--------------------------------"
 
-log "Post-Copy Migration + VIP Cutover abgeschlossen."
+log "Post-Copy Migration + Traffic Switch abgeschlossen."
 emit_event script_done

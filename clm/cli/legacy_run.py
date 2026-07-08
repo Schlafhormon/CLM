@@ -32,7 +32,7 @@ from clm.batching import (
     utc_now_iso as batch_now_iso,
 )
 from clm.core.defaults import DEFAULTS
-from clm.host import LocalExecutor, ProcessHandle, SshExecutor
+from clm.host import CommandBuilder, LocalExecutor, ProcessHandle, SshExecutor, render_env_exports, shell_quote
 from clm.migration.storage import CleanupPolicy, artifact_paths_for
 
 try:
@@ -331,25 +331,13 @@ def is_local_host(host: str) -> bool:
 
 
 def _escape_env_value(val) -> str:
-    # Escape an environment value.
-    if val is None:
-        return "''"
-    if isinstance(val, bool):
-        val = "1" if val else "0"
-    s = str(val)
-    if s.startswith("~/"):
-        s = "$HOME/" + s[2:]
-        s = s.replace("\\", "\\\\").replace('"', '\\"')
-        return f"\"{s}\""
-    return shlex.quote(s)
+    # Compatibility wrapper for tests and older imports.
+    return shell_quote(val)
 
 
 def _export_lines(env_vars: dict) -> str:
-    # Build shell export lines.
-    lines = []
-    for k, v in env_vars.items():
-        lines.append(f"export {k}={_escape_env_value(v)}")
-    return "\n".join(lines)
+    # Compatibility wrapper for tests and older imports.
+    return render_env_exports(env_vars)
 
 
 def _bash_dquote_escape(s: str) -> str:
@@ -1058,8 +1046,8 @@ def stop_load(procs):
 
 
 def build_remote_script(env_vars: dict, commands: list) -> str:
-    # Build remote script.
-    return "set -euo pipefail\n" + _export_lines(env_vars) + "\n" + "\n".join(commands) + "\n"
+    # Compatibility wrapper for tests and older imports.
+    return CommandBuilder.shell_script(env_vars, commands).render()
 
 
 def estimate_host_clock_offset_ms(host: str, *, samples: int = 3) -> Optional[dict]:

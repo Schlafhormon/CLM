@@ -2,6 +2,7 @@
 
 import tempfile
 import unittest
+import shlex
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -131,6 +132,32 @@ class RuntimeBackendMigrationTests(unittest.TestCase):
         self.assertIn("export TRAFFIC_VERIFY_CMD='curl -fsS http://service/health'", script)
         for vip_env in ("VIP_ADDR", "VIP_CIDR", "VIP_IF_SRC", "VIP_IF_DST", "VIP_PORT", "VIP_CONNTRACK_CLEAR_SRC"):
             self.assertNotIn(f"export {vip_env}", script)
+
+    def test_runc_backend_quotes_hook_arguments_and_env_values(self):
+        cfg = deepcopy(cli.DEFAULTS)
+        cfg["repo_path"] = "~/CLM Repo"
+        cfg["container"]["name"] = "web app"
+        cfg["traffic"] = {
+            "mode": "command",
+            "hooks": {
+                "switch": ["lbctl", "activate dest", "name=web app", "quote'arg"],
+            },
+        }
+        cfg["paths"]["logs_root"] = "/mnt/criu/logs with space"
+
+        script = RuncBackend().build_legacy_migration_script(
+            cfg,
+            method="precopy",
+            run_id="run with quote'",
+            events_log="/tmp/events log\nnext.ndjson",
+        )
+
+        self.assertIn("export REPO=${HOME}'/CLM Repo'", script)
+        self.assertIn("export NAME='web app'", script)
+        self.assertIn("export RUN_ID='run with quote'\"'\"''", script)
+        self.assertIn("export EVENTS_LOG='/tmp/events log\nnext.ndjson'", script)
+        hook = shlex.join(["lbctl", "activate dest", "name=web app", "quote'arg"])
+        self.assertIn(f"export TRAFFIC_SWITCH_CMD={shlex.quote(hook)}", script)
 
     def test_docker_migration_fails_fast(self):
         cfg = deepcopy(cli.DEFAULTS)

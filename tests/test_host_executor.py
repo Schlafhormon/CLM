@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from clm.host import CommandResult, LocalExecutor, ProcessHandle, SshExecutor
+from clm.host import CommandBuilder, CommandResult, LocalExecutor, ProcessHandle, SshExecutor, ShellScript, render_env_exports
 
 
 class _FakeStdout:
@@ -25,9 +25,22 @@ class _FakePopenProcess:
     def __init__(self, returncode=0, lines=None):
         self.returncode = returncode
         self.stdout = _FakeStdout(lines or [])
+        self.stdin = _FakeStdin()
 
     def wait(self):
         return self.returncode
+
+
+class _FakeStdin:
+    def __init__(self):
+        self.data = []
+        self.closed = False
+
+    def write(self, value):
+        self.data.append(value)
+
+    def close(self):
+        self.closed = True
 
 
 class _FakeBackgroundProcess:
@@ -199,8 +212,62 @@ class CommandResultTests(unittest.TestCase):
         self.assertNotIn("very sensitive output", text)
 
 
+class ShellScriptTests(unittest.TestCase):
+    def test_env_exports_quote_spaces_quotes_newlines_and_home(self):
+        exports = render_env_exports(
+            {
+                "PLAIN": "abc",
+                "WITH_SPACE": "hello world",
+                "WITH_QUOTE": "can't stop",
+                "WITH_NEWLINE": "line1\nline2",
+                "REPO": "~/CLM Repo",
+                "BOOL": True,
+                "NONE": None,
+            }
+        )
+
+        self.assertIn("export PLAIN=abc", exports)
+        self.assertIn("export WITH_SPACE='hello world'", exports)
+        self.assertIn("export WITH_QUOTE='can'\"'\"'t stop'", exports)
+        self.assertIn("export WITH_NEWLINE='line1\nline2'", exports)
+        self.assertIn("export REPO=${HOME}'/CLM Repo'", exports)
+        self.assertIn("export BOOL=1", exports)
+        self.assertIn("export NONE=''", exports)
+
+    def test_env_export_rejects_invalid_names(self):
+        with self.assertRaises(ValueError):
+            render_env_exports({"BAD; touch /tmp/pwn": "value"})
+
+    def test_shell_script_renders_commands_without_eval(self):
+        script = CommandBuilder.shell_script(
+            {"NAME": "web app"},
+            [["printf", "%s\n", "hello world"], "echo \"$NAME\""],
+        ).render()
+
+        self.assertTrue(script.startswith("set -euo pipefail\n"))
+        self.assertIn("export NAME='web app'", script)
+        self.assertIn("printf '%s\n' 'hello world'", script)
+        self.assertIn("echo \"$NAME\"", script)
+        self.assertNotIn("eval", script)
+
+    def test_shell_script_display_redacts_exported_and_inline_secrets(self):
+        script = ShellScript(
+            env={"API_TOKEN": "abc def", "NORMAL": "visible"},
+            commands=("deploy --password 'open sesame' token='abc def'",),
+        )
+
+        text = script.display
+
+        self.assertIn("export API_TOKEN=<redacted>", text)
+        self.assertIn("--password <redacted>", text)
+        self.assertIn("token=<redacted>", text)
+        self.assertNotIn("open sesame", text)
+        self.assertNotIn("abc def", text)
+        self.assertIn("visible", text)
+
+
 class SshExecutorTests(unittest.TestCase):
-    def test_build_command_wraps_script_in_bash_lc_without_connecting(self):
+    def test_build_command_runs_bash_from_stdin_without_connecting(self):
         executor = SshExecutor("example.org", user="clm", port=2222)
         command = executor.build_command("echo hello && uname -a")
 
@@ -210,10 +277,10 @@ class SshExecutorTests(unittest.TestCase):
         self.assertIn("StrictHostKeyChecking=accept-new", command)
         self.assertIn("-p", command)
         self.assertIn("2222", command)
-        self.assertEqual(command[-3], "clm@example.org")
-        self.assertEqual(command[-2], "--")
-        self.assertTrue(command[-1].startswith("bash -lc "))
-        self.assertIn("echo hello", command[-1])
+        self.assertEqual(command[-5], "clm@example.org")
+        self.assertEqual(command[-4], "--")
+        self.assertEqual(command[-3:], ["bash", "-l", "-s"])
+        self.assertNotIn("echo hello", command)
 
     def test_run_uses_built_ssh_command_with_fake_runner(self):
         calls = {}
@@ -229,9 +296,11 @@ class SshExecutorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "remote-out")
         self.assertEqual(calls["command"][0], "ssh")
-        self.assertEqual(calls["command"][-3], "host1")
+        self.assertEqual(calls["command"][-5], "host1")
+        self.assertEqual(calls["command"][-3:], ["bash", "-l", "-s"])
         self.assertEqual(calls["kwargs"]["stdout"], subprocess.PIPE)
         self.assertEqual(calls["kwargs"]["stderr"], subprocess.PIPE)
+        self.assertEqual(calls["kwargs"]["input"], "printf hi")
 
     def test_run_streamed_uses_built_ssh_command_and_streams_output(self):
         calls = {}
@@ -249,10 +318,11 @@ class SshExecutorTests(unittest.TestCase):
         self.assertEqual(result.stdout, "remote-one\nremote-two\n")
         self.assertEqual(streamed, ["remote-one\n", "remote-two\n"])
         self.assertEqual(calls["command"][0], "ssh")
-        self.assertEqual(calls["command"][-3], "host1")
-        self.assertEqual(calls["command"][-2], "--")
-        self.assertTrue(calls["command"][-1].startswith("bash -lc "))
-        self.assertIn("printf hi", calls["command"][-1])
+        self.assertEqual(calls["command"][-5], "host1")
+        self.assertEqual(calls["command"][-4], "--")
+        self.assertEqual(calls["command"][-3:], ["bash", "-l", "-s"])
+        self.assertNotIn("printf hi", calls["command"])
+        self.assertEqual(calls["kwargs"]["stdin"], subprocess.PIPE)
         self.assertEqual(calls["kwargs"]["stderr"], subprocess.STDOUT)
 
     def test_start_uses_built_ssh_command_without_connecting(self):
@@ -269,11 +339,12 @@ class SshExecutorTests(unittest.TestCase):
 
         self.assertIsInstance(result, ProcessHandle)
         self.assertEqual(calls["command"][0], "ssh")
-        self.assertEqual(calls["command"][-3], "host1")
-        self.assertTrue(calls["command"][-1].startswith("bash -lc "))
+        self.assertEqual(calls["command"][-5], "host1")
+        self.assertEqual(calls["command"][-3:], ["bash", "-l", "-s"])
         self.assertEqual(calls["kwargs"]["stdout"], "out")
         self.assertEqual(calls["kwargs"]["stderr"], "err")
         self.assertFalse(calls["kwargs"]["text"])
+        self.assertEqual(calls["kwargs"]["stdin"], subprocess.PIPE)
 
     def test_streamed_result_redacts_secrets_from_ssh_command_display(self):
         def fake_popen(command, **kwargs):

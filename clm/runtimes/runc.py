@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from clm.core.models import MigrationResult, PreflightResult
+from clm.host import CommandBuilder
 from clm.migration.storage import transfer_plan_for
 from clm.migration.traffic import select_traffic_backend
 from clm.runtimes.base import RuntimeBackend, RuntimeInspection
@@ -178,7 +179,7 @@ class RuncBackend(RuntimeBackend):
             )
 
         script_name = f"migrate_{'precopy' if method == 'precopy' else 'postcopy_lazy_pages'}.sh"
-        return legacy_cli.build_remote_script(env_vars, [f"bash \"$REPO/scripts/{script_name}\""])
+        return CommandBuilder.shell_script(env_vars, [f"bash \"$REPO/scripts/{script_name}\""]).render()
 
     @staticmethod
     def migration_script_names() -> tuple[str, str]:

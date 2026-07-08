@@ -25,6 +25,9 @@ from clm.migration.traffic import select_traffic_backend
 from clm.runtimes.base import RuntimeBackend, RuntimeInspection
 
 
+LEGACY_ADAPTER_BOUNDARY = True
+
+
 class RuncBackend(RuntimeBackend):
     """Adapter around the current runc migration scripts."""
 

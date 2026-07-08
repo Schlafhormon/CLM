@@ -19,4 +19,4 @@ dependencies = [
 clm = "clm.cli:main"
 
 [tool.setuptools]
-packages = ["clm", "clm.core", "clm.cli", "clm.cli.commands"]
+packages = ["clm", "clm.core", "clm.host", "clm.cli", "clm.cli.commands"]

@@ -32,6 +32,7 @@ from clm.batching import (
     resolve_batch_manifest,
     utc_now_iso as batch_now_iso,
 )
+from clm.host import LocalExecutor, SshExecutor
 
 try:
     import yaml
@@ -621,31 +622,36 @@ def repo_path_remote_for_bash(cfg: dict) -> str:
 
 
 def run_local(cmd, *, check=False, capture=False, cwd=None, env=None, stdout=None, stderr=None, text=True):
-    # Run local.
-    if capture:
-        return subprocess.run(cmd, check=check, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=text, cwd=cwd, env=env)
-    return subprocess.run(cmd, check=check, stdout=stdout, stderr=stderr, text=text, cwd=cwd, env=env)
+    # Legacy CLI helper. New code should use clm.host.LocalExecutor directly.
+    return LocalExecutor().run(
+        cmd,
+        check=check,
+        capture=capture,
+        cwd=cwd,
+        env=env,
+        stdout=stdout,
+        stderr=stderr,
+        text=text,
+    )
 
 
 def run_shell_local(script: str, *, check=False, capture=False, cwd=None, env=None, stdout=None, stderr=None):
-    # Run shell local.
+    # Legacy CLI helper. New code should use LocalExecutor.run_shell directly.
     return run_local(["bash", "-lc", script], check=check, capture=capture, cwd=cwd, env=env, stdout=stdout, stderr=stderr)
 
 
 def run_remote(host: str, script: str, *, check=False, capture=False, stdout=None, stderr=None, text=True):
-    # Run remote.
+    # Legacy CLI helper. New code should use clm.host.SshExecutor directly.
     if is_local_host(host):
         return run_shell_local(script, check=check, capture=capture, stdout=stdout, stderr=stderr)
-    base = [
-        "ssh",
-        "-o", "BatchMode=yes",
-        "-o", "ConnectTimeout=5",
-        "-o", "StrictHostKeyChecking=accept-new",
-        host,
-        "--",
-    ]
-    remote_cmd = "bash -lc " + shlex.quote(script)
-    return run_local(base + [remote_cmd], check=check, capture=capture, stdout=stdout, stderr=stderr, text=text)
+    return SshExecutor(host).run(
+        script,
+        check=check,
+        capture=capture,
+        stdout=stdout,
+        stderr=stderr,
+        text=text,
+    )
 
 
 def ensure_dir(path: str) -> None:

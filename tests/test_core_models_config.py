@@ -9,6 +9,7 @@ import yaml
 
 import clm.cli as cli
 from clm.core import config as core_config
+from clm.core.defaults import DEFAULTS as CORE_DEFAULTS
 from clm.core.models import (
     ContainerRef,
     HostRef,
@@ -65,6 +66,13 @@ class CoreConfigTests(unittest.TestCase):
                         offenders.append(f"{path}:{module}")
 
         self.assertEqual(offenders, [])
+
+    def test_core_defaults_are_cli_free_and_cli_defaults_stay_compatible(self):
+        defaults_copy = core_config.legacy_defaults()
+
+        self.assertEqual(defaults_copy, CORE_DEFAULTS)
+        self.assertIsNot(defaults_copy, CORE_DEFAULTS)
+        self.assertIs(cli.DEFAULTS, CORE_DEFAULTS)
 
     def test_load_legacy_env_matches_cli_loader_for_example_config(self):
         path = Path("config/env.example.yaml")

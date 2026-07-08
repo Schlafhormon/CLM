@@ -12,9 +12,9 @@ Seit der ersten Baseline wurden mehrere Schichten angelegt, aber nicht alle
 Legacy-Pfade entfernt:
 
 - `clm/core/` enthaelt typed Config- und Modellhelfer. Diese Module duerfen
-  keine Runtime-, Monitoring- oder direkten CLI-Legacy-Module importieren. Die
-  bekannte Uebergangsstelle ist `legacy_defaults()`, das die historische
-  `clm.cli`-Facade nutzt, solange die Defaults noch im Legacy-Runner liegen.
+  keine Runtime-, Monitoring- oder CLI-Module importieren. Die
+  legacy-kompatiblen Defaults liegen in `clm.core.defaults`; `clm.cli.DEFAULTS`
+  bleibt nur als Kompatibilitaets-Re-export erhalten.
 - `clm/runtimes/` enthaelt Backend-Interfaces und Skeletons fuer `runc`,
   `docker` und `containerd`. Nur `runc` kann aktuell Migration ausfuehren;
   Docker/containerd muessen in `clm run` vor Baseline-Cleanup, Source-Reset,

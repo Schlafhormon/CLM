@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
-from .legacy_run import DEFAULTS, deep_merge, load_env, normalize_hosts
+from clm.core.defaults import DEFAULTS
+
+from .legacy_run import deep_merge, load_env, normalize_hosts
 
 __all__ = ("DEFAULTS", "deep_merge", "load_env", "normalize_hosts")

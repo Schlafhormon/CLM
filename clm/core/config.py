@@ -11,6 +11,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Optional
 
+from clm.core.defaults import legacy_defaults as _legacy_defaults
 from clm.core.models import (
     ContainerGroupRef,
     ContainerRef,
@@ -35,9 +36,7 @@ LOCAL_HOSTS = {"local", "localhost", "127.0.0.1", "::1", ""}
 def legacy_defaults() -> dict[str, Any]:
     """Return a copy of the legacy CLI defaults."""
 
-    from clm.cli import DEFAULTS
-
-    return deepcopy(DEFAULTS)
+    return _legacy_defaults()
 
 
 def deep_merge(base: dict[str, Any], override: Optional[dict[str, Any]]) -> dict[str, Any]:

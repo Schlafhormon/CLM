@@ -30,7 +30,7 @@ def test_core_modules_do_not_import_runtime_monitoring_or_cli_legacy_modules():
     forbidden_prefixes = (
         "clm.runtimes",
         "clm.monitoring",
-        "clm.cli.legacy",
+        "clm.cli",
     )
     violations = []
 
@@ -111,3 +111,12 @@ def test_cli_package_facade_stays_small_compatibility_layer():
     assert "from . import legacy_run as _legacy" in text
     assert "def run_cli(" not in text
     assert "DEFAULTS =" not in text
+
+
+def test_legacy_defaults_are_owned_by_core_not_legacy_runner():
+    legacy_text = (REPO_ROOT / "clm" / "cli" / "legacy_run.py").read_text(encoding="utf-8")
+    defaults_text = (REPO_ROOT / "clm" / "core" / "defaults.py").read_text(encoding="utf-8")
+
+    assert "from clm.core.defaults import DEFAULTS" in legacy_text
+    assert "DEFAULTS =" not in legacy_text
+    assert "DEFAULTS:" in defaults_text

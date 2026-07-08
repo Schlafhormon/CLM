@@ -10,6 +10,12 @@ The v1 config is modeled around `MigrationRequest` and the new runtime,
 storage, traffic, probe, cleanup, and output boundaries. It is not a complete
 execution contract yet.
 
+Current boundary note: `clm.core.config` can parse both the legacy env shape and
+the draft v1 shape into core dataclasses. The legacy env path still depends on
+historical defaults owned by the CLI compatibility layer, so the split is not
+complete. New core code should not add imports from runtime, monitoring, or
+direct CLI legacy modules.
+
 ## Top-Level Shape
 
 `version` must be `1`. The file describes one migration request:
@@ -30,7 +36,9 @@ while `ssh` means CLM should use remote execution.
 `runtime.type` selects the container runtime backend. `runc` is the only backend
 that can currently execute migrations through the legacy scripts. `docker` and
 `containerd` are represented as preflight/inspect skeletons and should fail
-fast for migration execution until their backends are implemented.
+fast for `clm run` before cleanup, reset, monitor, load generation, or migration
+starts. This fail-fast behavior is part of the current contract, not just a
+best-effort warning.
 
 Privilege mode is explicit:
 

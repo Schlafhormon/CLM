@@ -179,8 +179,15 @@ traffic, probe, or cleanup state only in log text.
 
 The current Python CLI still delegates the implemented runtime migration to
 legacy runc scripts. Those scripts keep VIP cutover as a strong assumption in
-some paths. Docker and containerd backends fail fast before migration, but only
-the capability gate prevents earlier baseline side effects in `clm run`.
+some paths. Docker and containerd backends fail fast before migration. For
+`clm run`, the capability gate must run before run directories, cleanup/reset,
+monitoring, synthetic load, and migration side effects.
+
+`traffic.mode=external` and `traffic.mode=command` are supported as
+non-VIP handoff modes for the current runc adapter. They do not export `VIP_*`
+script environment, and the Bash `TRAFFIC_MODE` branches for these modes must
+not run VIP address, conntrack, or arping commands. The scripts still contain
+VIP helper functions for the `vip` compatibility branch.
 
 Until restore and traffic phases are separated into structured backend results,
 some failures that should ultimately be `partial` may still appear as

@@ -23,6 +23,13 @@ destination readiness/health checks. Default monitoring tracks source and
 destination probes only. VIP probes and VIP burst events are enabled by the
 `vip` backend or by explicit monitor/load configuration.
 
+In the current Python `RuncBackend`, `traffic.mode=external` and
+`traffic.mode=command` export `TRAFFIC_MODE` and optional command-hook
+variables to the legacy migration script, but they must not export `VIP_*`
+environment variables. The Bash scripts still contain VIP helper functions for
+the `vip` branch; their `external` and `command` `TRAFFIC_MODE` cases must not
+execute `ip addr`, `conntrack`, or `arping`.
+
 Legacy synthetic load profiles are still lab-oriented. When `traffic.mode` is
 `external`, `command`, or `none`, CLM rejects `load.target: vip` before run
 side effects. Use `src`, `dst`, `all`, explicit probes, or traffic/load tooling

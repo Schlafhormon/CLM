@@ -1,26 +1,55 @@
 # Architektur-Baseline
 
-Stand: 2026-07-07
+Stand: 2026-07-08
 
 Diese Baseline beschreibt den aktuellen Ist-Zustand des CLM-Repositories. Sie ist
 als Orientierung fuer die naechste Zerlegung des aktuellen Forschungs-Runners in
-ein produktives CLM-Core gedacht. Es wurden keine Codeaenderungen bewertet oder
-vorgenommen.
+ein produktives CLM-Core gedacht.
+
+## Aktueller Nachtrag 2026-07-08
+
+Seit der ersten Baseline wurden mehrere Schichten angelegt, aber nicht alle
+Legacy-Pfade entfernt:
+
+- `clm/core/` enthaelt typed Config- und Modellhelfer. Diese Module duerfen
+  keine Runtime-, Monitoring- oder direkten CLI-Legacy-Module importieren. Die
+  bekannte Uebergangsstelle ist `legacy_defaults()`, das die historische
+  `clm.cli`-Facade nutzt, solange die Defaults noch im Legacy-Runner liegen.
+- `clm/runtimes/` enthaelt Backend-Interfaces und Skeletons fuer `runc`,
+  `docker` und `containerd`. Nur `runc` kann aktuell Migration ausfuehren;
+  Docker/containerd muessen in `clm run` vor Baseline-Cleanup, Source-Reset,
+  Monitor, Load und Migration scheitern.
+- `clm/migration/storage/`, `clm/migration/traffic/` und
+  `clm/migration/strategies/` kapseln Teile der frueheren CLI-Logik. Die
+  implementierte Migration delegiert aber weiterhin an runc/CRIU-Bash-Skripte.
+- `clm/host/` ist die neue Host-Execution-Grenze. Die alten Patch-Punkte in
+  `clm.cli` bleiben als Kompatibilitaetsadapter bestehen.
+- `clm/monitoring/` und `clm/analysis/` trennen Core-Modelle und
+  operatornahe Summary von Legacy-Monitoring, Forschungsmetriken und Plots.
+
+Diese Grenzen werden durch fokussierte Architektur-/Contract-Tests abgesichert:
+Core-Importgrenzen, `clm run`-Capability-Gates, Traffic-Mode-Script-Env,
+Bash-`TRAFFIC_MODE`-Branches und die Groesse der `clm.cli`-Facade.
 
 ## Kurzfazit
 
-CLM ist aktuell ein funktionsfaehiger, aber stark runc- und Labor-spezifischer
-Runner fuer CRIU-basierte Container-Live-Migration. Die Kernfunktionalitaet ist
-auf wenige grosse Dateien verteilt:
+CLM ist aktuell ein funktionsfaehiger, aber weiterhin stark runc- und
+Labor-spezifischer Runner fuer CRIU-basierte Container-Live-Migration. Die
+Kernfunktionalitaet wurde teilweise aufgeteilt:
 
-- `clm/cli.py` orchestriert fast alles: Config, Preflight, Remote-Kommandos,
-  Monitoring, synthetische Last, Migration, Cleanup, Batch-Artefakte und
-  Analyse-Aufruf.
-- `scripts/` enthaelt den eigentlichen runc/CRIU/VIP-Migrationsablauf als Bash.
-- `tools/monitor/monitor.py` ist zugleich Laufzeit-Monitor und Single-Run-
-  Analyzer.
-- `clm/analysis_pipeline.py` ist eine umfangreiche Forschungs-/Auswertungspipeline
-  fuer Batch-Metriken, Statistik und Plots.
+- `clm/cli/legacy_run.py` orchestriert noch den bestehenden Forschungs-Run:
+  Config, Preflight, Remote-Kommandos, Monitoring, synthetische Last, Migration,
+  Cleanup, Batch-Artefakte und Analyse-Aufruf.
+- `clm/cli/__init__.py` ist eine kleine Kompatibilitaets-Facade fuer historische
+  `clm.cli`-Imports und Test-Patch-Punkte.
+- `scripts/` enthaelt weiterhin den eigentlichen runc/CRIU-Migrationsablauf als
+  Bash. Die neuen `traffic.mode`-Branches verhindern VIP-Operationen in
+  `external` und `command`, aber die VIP-Funktionen bleiben im Skript.
+- `tools/monitor/monitor.py` bleibt Laufzeit-Monitor und CLI-kompatibler
+  Analyzer-Wrapper; Analysefunktionen sind nach `clm.monitoring.analysis`
+  gespiegelt.
+- `clm/analysis_pipeline.py` bleibt als schwere Forschungs-/Auswertungspipeline
+  import-kompatibel; `clm.analysis.summary` ist der core-naehere Einstieg.
 
 Das produktive CLM-Core sollte daraus die stabilen Operator-Pfade behalten:
 Konfiguration, Preflight, Migrationsplan, Runtime-Backend, Remote-Ausfuehrung,
@@ -34,7 +63,21 @@ verschoben oder als optionale Add-ons gekapselt werden.
 clm/
   __init__.py
   batching.py
-  cli.py
+  cli/
+    __init__.py
+    __main__.py
+    main.py
+    commands/
+    legacy_*.py
+  core/
+  host/
+  runtimes/
+  migration/
+    storage/
+    strategies/
+    traffic/
+  monitoring/
+  analysis/
   analysis_pipeline.py
 clm.py
 config/
@@ -65,7 +108,7 @@ workload/flask_app/
 docs/
 ```
 
-### `clm/cli.py`
+### `clm/cli/legacy_run.py` und `clm/cli/__init__.py`
 
 Verantwortlichkeiten:
 
@@ -86,8 +129,10 @@ Verantwortlichkeiten:
 
 Bewertung:
 
-- `cli.py` ist derzeit der zentrale Integrationspunkt und enthaelt mehrere
-  unterschiedliche Domaenen in einer Datei.
+- `legacy_run.py` ist derzeit der zentrale Integrationspunkt und enthaelt
+  mehrere unterschiedliche Domaenen in einer Datei.
+- `clm/cli/__init__.py` ist bewusst nur eine kleine Facade, die historische
+  `clm.cli`-Imports und Patch-Punkte stabil haelt.
 - Viele Schnittstellen sind implizit: Shell-Env-Variablen, Dateipfade,
   Eventnamen, Summary-Felder und Lognamen.
 - Die Tests stabilisieren einzelne Helfer und Script-Env-Generierung, aber kein
@@ -204,7 +249,7 @@ Bewertung:
 Verantwortlichkeiten:
 
 - Standalone-Wrapper fuer Batch-Analyse und Plot-Erzeugung.
-- Duplizieren Teile der Zielaufloesung aus `clm/cli.py`.
+- Duplizieren Teile der Zielaufloesung aus dem CLI-Legacy-Pfad.
 
 Bewertung:
 
@@ -254,7 +299,7 @@ Runtime-Backend liegen:
   - ruft `runc checkpoint --lazy-pages --page-server`;
   - startet `criu lazy-pages` auf dem Ziel;
   - restored per `runc restore --lazy-pages`.
-- `clm/cli.py`
+- `clm/cli/legacy_run.py`
   - setzt `MODE=runc`, `RUNC_BUNDLE_SRC`, `RUNC_BUNDLE_DST`, `RUNC_ROOT`-
     Annahmen und runc-spezifische Checkpoint-Namen;
   - `reset_source`, `cleanup_dest`, `cleanup_source` rufen direkt `sudo runc`
@@ -277,7 +322,8 @@ Nicht direkt runc-spezifisch, aber runtime-nah:
 
 Diese Teile tragen klar den Forschungs-/Messkampagnenkontext:
 
-- Synthetische Lastprofile in `clm/cli.py` und `config/env.example.yaml`:
+- Synthetische Lastprofile in `clm/cli/legacy_run.py` und
+  `config/env.example.yaml`:
   `cpu`, `wrk`, `wrk1..3`, `download`, `upload`, `stream`.
 - `workload/flask_app/app.py` als spezieller Test-Workload mit Endpunkten fuer
   Health, Counter, Stream, Download, Upload und CPU-Last.
@@ -343,7 +389,7 @@ Optional, aber nicht Core:
 
 ## Konkrete Risiken im aktuellen Aufbau
 
-1. **Hohe Kopplung in `clm/cli.py`**
+1. **Hohe Kopplung in `clm/cli/legacy_run.py`**
 
    CLI, Domainlogik, Remote-Ausfuehrung, Runtime-Details, Loadgeneratoren und
    Analyse-Aufrufe sind vermischt. Jede Erweiterung auf Docker/containerd/Podman
@@ -422,7 +468,7 @@ wegwerfen, sondern klare Schichten einfuehren.
 
 ```text
 clm/
-  cli.py
+  cli/
   config/
     schema.py
     loader.py
@@ -477,8 +523,9 @@ tools/
 
 ### Begruendung der Zielstruktur
 
-- `clm/cli.py` sollte nur Argumente parsen, Config laden, Plan erzeugen und
-  Services aufrufen. Die CLI sollte keine Runtime- oder Bash-Details kennen.
+- Die neue CLI-Schicht sollte nur Argumente parsen, Config laden, Plan erzeugen
+  und Services aufrufen. Die CLI sollte keine Runtime- oder Bash-Details
+  kennen; `legacy_run.py` bleibt bis dahin die Kompatibilitaetsschicht.
 - `clm/config/` kapselt Defaults, Schema-Versionen, Validierung und Migration
   alter Configs. Das reduziert implizite Annahmen in `DEFAULTS`.
 - `clm/core/` definiert stabile Datenmodelle fuer Runs, Plans, Events,
@@ -511,8 +558,8 @@ tools/
 Empfohlene Reihenfolge ohne grossen Big-Bang-Refactor:
 
 1. Event- und Summary-Schema dokumentieren und mit Tests fixieren.
-2. `clm/cli.py` interne Modelle fuer `RunContext`, `MigrationPlan` und
-   `HostConfig` einfuehren, ohne Verhalten zu aendern.
+2. Interne Modelle fuer `RunContext`, `MigrationPlan` und `HostConfig`
+   einfuehren, ohne Verhalten zu aendern.
 3. Remote-Ausfuehrung und Command-Streaming in `clm/execution/` auslagern.
 4. runc-spezifische Pfade und Script-Env in `clm/runtime/runc.py` kapseln.
 5. VIP/NAT/conntrack/GARP-Kommandos in `clm/network/` isolieren.

@@ -333,50 +333,28 @@ def _print_with_progress(raw_line: str, tag: str, add_ts_if_missing: bool = True
 
 def _run_local_streamed(cmd, *, check=False, cwd=None, env=None, tag: str = "script"):
     # Run local streamed.
-    proc = subprocess.Popen(
+    return LocalExecutor().run_streamed(
         cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
+        check=check,
         cwd=cwd,
         env=env,
+        on_output=lambda line: _print_with_progress(line, tag=tag, add_ts_if_missing=True),
     )
-    captured = []
-    try:
-        if proc.stdout is not None:
-            for line in proc.stdout:
-                captured.append(line)
-                _print_with_progress(line, tag=tag, add_ts_if_missing=True)
-        rc = proc.wait()
-    finally:
-        if proc.stdout is not None:
-            try:
-                proc.stdout.close()
-            except Exception:
-                pass
-
-    stdout_text = "".join(captured)
-    result = subprocess.CompletedProcess(cmd, rc, stdout=stdout_text, stderr=None)
-    if check and rc != 0:
-        raise subprocess.CalledProcessError(rc, cmd, output=stdout_text)
-    return result
 
 
 def _run_remote_streamed(host: str, script: str, *, check=False, tag: str = "remote"):
     # Run remote streamed.
     if is_local_host(host):
-        return _run_local_streamed(["bash", "-lc", script], check=check, tag=tag)
-    base = [
-        "ssh",
-        "-o", "BatchMode=yes",
-        "-o", "ConnectTimeout=5",
-        "-o", "StrictHostKeyChecking=accept-new",
-        host,
-        "--",
-    ]
-    remote_cmd = "bash -lc " + shlex.quote(script)
-    return _run_local_streamed(base + [remote_cmd], check=check, tag=tag)
+        executor = LocalExecutor()
+        command = ["bash", "-lc", script]
+    else:
+        executor = SshExecutor(host)
+        command = script
+    return executor.run_streamed(
+        command,
+        check=check,
+        on_output=lambda line: _print_with_progress(line, tag=tag, add_ts_if_missing=True),
+    )
 
 
 class TerminalProgress:

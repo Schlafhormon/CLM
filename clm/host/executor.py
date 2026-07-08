@@ -19,6 +19,8 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 
 Command = str | Sequence[str | Path]
 Runner = Callable[..., subprocess.CompletedProcess]
+PopenFactory = Callable[..., subprocess.Popen]
+StreamCallback = Callable[[str], None]
 
 _SECRET_ASSIGNMENT_RE = re.compile(
     r"(?i)\b(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key)=([^\s'\";]+)"
@@ -113,12 +115,26 @@ class HostExecutor(abc.ABC):
     ) -> CommandResult:
         raise NotImplementedError
 
+    @abc.abstractmethod
+    def run_streamed(
+        self,
+        command: Command,
+        *,
+        check: bool = False,
+        cwd: Optional[str | Path] = None,
+        env: Optional[Mapping[str, str]] = None,
+        on_output: Optional[StreamCallback] = None,
+        text: bool = True,
+    ) -> CommandResult:
+        raise NotImplementedError
+
 
 class LocalExecutor(HostExecutor):
     """Run commands on the local controller host."""
 
-    def __init__(self, runner: Runner = subprocess.run):
+    def __init__(self, runner: Runner = subprocess.run, popen_factory: PopenFactory = subprocess.Popen):
         self._runner = runner
+        self._popen_factory = popen_factory
 
     def run(
         self,
@@ -160,6 +176,54 @@ class LocalExecutor(HostExecutor):
     def run_shell(self, script: str, **kwargs: Any) -> CommandResult:
         return self.run(["bash", "-lc", script], **kwargs)
 
+    def run_streamed(
+        self,
+        command: Command,
+        *,
+        check: bool = False,
+        cwd: Optional[str | Path] = None,
+        env: Optional[Mapping[str, str]] = None,
+        on_output: Optional[StreamCallback] = None,
+        text: bool = True,
+    ) -> CommandResult:
+        start = time.monotonic()
+        proc = self._popen_factory(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=text,
+            bufsize=1,
+            cwd=cwd,
+            env=env,
+        )
+        captured = []
+        try:
+            if proc.stdout is not None:
+                for line in proc.stdout:
+                    captured.append(line)
+                    if on_output is not None:
+                        on_output(line)
+            rc = proc.wait()
+        finally:
+            if proc.stdout is not None:
+                try:
+                    proc.stdout.close()
+                except Exception:
+                    pass
+
+        stdout_text = "".join(captured)
+        result = CommandResult(
+            command=command,
+            exit_code=rc,
+            stdout=stdout_text,
+            stderr=None,
+            duration_s=time.monotonic() - start,
+            captured=True,
+        )
+        if check:
+            result.check_returncode()
+        return result
+
 
 class SshExecutor(HostExecutor):
     """Run shell scripts on a remote host through SSH."""
@@ -174,6 +238,7 @@ class SshExecutor(HostExecutor):
         strict_host_key_checking: str = "accept-new",
         extra_options: Optional[Sequence[str]] = None,
         runner: Runner = subprocess.run,
+        popen_factory: PopenFactory = subprocess.Popen,
     ):
         self.host = host
         self.user = user
@@ -181,7 +246,7 @@ class SshExecutor(HostExecutor):
         self.connect_timeout = int(connect_timeout)
         self.strict_host_key_checking = strict_host_key_checking
         self.extra_options = tuple(extra_options or ())
-        self._local = LocalExecutor(runner=runner)
+        self._local = LocalExecutor(runner=runner, popen_factory=popen_factory)
 
     @property
     def target(self) -> str:
@@ -227,5 +292,26 @@ class SshExecutor(HostExecutor):
             capture=capture,
             stdout=stdout,
             stderr=stderr,
+            text=text,
+        )
+
+    def run_streamed(
+        self,
+        command: Command,
+        *,
+        check: bool = False,
+        cwd: Optional[str | Path] = None,
+        env: Optional[Mapping[str, str]] = None,
+        on_output: Optional[StreamCallback] = None,
+        text: bool = True,
+    ) -> CommandResult:
+        if cwd is not None:
+            raise NotImplementedError("SshExecutor cwd handling is not implemented yet")
+        if env is not None:
+            raise NotImplementedError("SshExecutor remote env handling is not implemented yet")
+        return self._local.run_streamed(
+            self.build_command(command),
+            check=check,
+            on_output=on_output,
             text=text,
         )

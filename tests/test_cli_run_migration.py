@@ -9,7 +9,7 @@ from contextlib import redirect_stderr
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import yaml
 
@@ -111,6 +111,49 @@ class RunMigrationTests(unittest.TestCase):
 
         self.assertIn("traffic hook switch is a shell string", err)
         self.assertIn("allow_shell", err)
+
+    def test_run_remote_cli_adapter_still_delegates_to_shexecutor_run(self):
+        expected = SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+        with patch("clm.cli.SshExecutor") as ssh_executor:
+            ssh_executor.return_value.run.return_value = expected
+
+            result = cli.run_remote(
+                "remote1",
+                "echo token=abc123",
+                check=True,
+                capture=True,
+                stdout="out",
+                stderr="err",
+                text=False,
+            )
+
+        self.assertIs(result, expected)
+        ssh_executor.assert_called_once_with("remote1")
+        ssh_executor.return_value.run.assert_called_once_with(
+            "echo token=abc123",
+            check=True,
+            capture=True,
+            stdout="out",
+            stderr="err",
+            text=False,
+        )
+
+    def test_run_remote_streamed_cli_adapter_delegates_to_shexecutor_streaming(self):
+        expected = SimpleNamespace(returncode=0, stdout="streamed")
+
+        with patch("clm.cli.SshExecutor") as ssh_executor:
+            ssh_executor.return_value.run_streamed.return_value = expected
+
+            result = cli._run_remote_streamed("remote1", "printf hi", check=True, tag="baseline:dest")
+
+        self.assertIs(result, expected)
+        ssh_executor.assert_called_once_with("remote1")
+        ssh_executor.return_value.run_streamed.assert_called_once_with(
+            "printf hi",
+            check=True,
+            on_output=ANY,
+        )
 
     def test_external_run_baseline_does_not_emit_vip_ip_conntrack_or_arping(self):
         cfg = deepcopy(cli.DEFAULTS)

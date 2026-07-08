@@ -9,6 +9,27 @@ from pathlib import Path
 from clm.host import CommandResult, LocalExecutor, SshExecutor
 
 
+class _FakeStdout:
+    def __init__(self, lines):
+        self._lines = list(lines)
+        self.closed = False
+
+    def __iter__(self):
+        return iter(self._lines)
+
+    def close(self):
+        self.closed = True
+
+
+class _FakePopenProcess:
+    def __init__(self, returncode=0, lines=None):
+        self.returncode = returncode
+        self.stdout = _FakeStdout(lines or [])
+
+    def wait(self):
+        return self.returncode
+
+
 class LocalExecutorTests(unittest.TestCase):
     def test_run_capture_returns_result_with_output_exit_code_and_duration(self):
         result = LocalExecutor().run(
@@ -49,6 +70,38 @@ class LocalExecutorTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.returncode, 9)
         self.assertIn("bad", ctx.exception.output)
+
+    def test_run_streamed_forwards_lines_and_returns_captured_output(self):
+        calls = {}
+
+        def fake_popen(command, **kwargs):
+            calls["command"] = command
+            calls["kwargs"] = kwargs
+            return _FakePopenProcess(lines=["one\n", "two\n"])
+
+        streamed = []
+        result = LocalExecutor(popen_factory=fake_popen).run_streamed(
+            ["tool", "arg"],
+            check=True,
+            on_output=streamed.append,
+        )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "one\ntwo\n")
+        self.assertEqual(streamed, ["one\n", "two\n"])
+        self.assertTrue(result.captured)
+        self.assertEqual(calls["command"], ["tool", "arg"])
+        self.assertEqual(calls["kwargs"]["stderr"], subprocess.STDOUT)
+
+    def test_run_streamed_check_raises_with_captured_output(self):
+        def fake_popen(command, **kwargs):
+            return _FakePopenProcess(returncode=23, lines=["failure\n"])
+
+        with self.assertRaises(subprocess.CalledProcessError) as ctx:
+            LocalExecutor(popen_factory=fake_popen).run_streamed(["tool"], check=True)
+
+        self.assertEqual(ctx.exception.returncode, 23)
+        self.assertIn("failure", ctx.exception.output)
 
 
 class CommandResultTests(unittest.TestCase):
@@ -105,6 +158,43 @@ class SshExecutorTests(unittest.TestCase):
         self.assertEqual(calls["kwargs"]["stdout"], subprocess.PIPE)
         self.assertEqual(calls["kwargs"]["stderr"], subprocess.PIPE)
 
+    def test_run_streamed_uses_built_ssh_command_and_streams_output(self):
+        calls = {}
+
+        def fake_popen(command, **kwargs):
+            calls["command"] = command
+            calls["kwargs"] = kwargs
+            return _FakePopenProcess(lines=["remote-one\n", "remote-two\n"])
+
+        streamed = []
+        executor = SshExecutor("host1", popen_factory=fake_popen)
+        result = executor.run_streamed("printf hi", check=True, on_output=streamed.append)
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "remote-one\nremote-two\n")
+        self.assertEqual(streamed, ["remote-one\n", "remote-two\n"])
+        self.assertEqual(calls["command"][0], "ssh")
+        self.assertEqual(calls["command"][-3], "host1")
+        self.assertEqual(calls["command"][-2], "--")
+        self.assertTrue(calls["command"][-1].startswith("bash -lc "))
+        self.assertIn("printf hi", calls["command"][-1])
+        self.assertEqual(calls["kwargs"]["stderr"], subprocess.STDOUT)
+
+    def test_streamed_result_redacts_secrets_from_ssh_command_display(self):
+        def fake_popen(command, **kwargs):
+            return _FakePopenProcess(lines=["ok\n"])
+
+        result = SshExecutor("host1", popen_factory=fake_popen).run_streamed(
+            "deploy token=abc123 --password open-sesame",
+            check=True,
+        )
+
+        text = str(result)
+        self.assertIn("token=<redacted>", text)
+        self.assertIn("--password <redacted>", text)
+        self.assertNotIn("abc123", text)
+        self.assertNotIn("open-sesame", text)
+
     def test_remote_cwd_and_env_are_explicitly_not_implemented(self):
         executor = SshExecutor("host1", runner=lambda command, **kwargs: None)
 
@@ -113,6 +203,12 @@ class SshExecutorTests(unittest.TestCase):
 
         with self.assertRaises(NotImplementedError):
             executor.run("env", env={"A": "B"})
+
+        with self.assertRaises(NotImplementedError):
+            executor.run_streamed("pwd", cwd="/tmp")
+
+        with self.assertRaises(NotImplementedError):
+            executor.run_streamed("env", env={"A": "B"})
 
 
 if __name__ == "__main__":

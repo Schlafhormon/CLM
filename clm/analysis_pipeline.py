@@ -2223,6 +2223,28 @@ def _probe_client_visible_segments(summary_data: Dict[str, Any]) -> List[Dict[st
     return out
 
 
+def _probe_timeline_default_target(http_rows: Sequence[Dict[str, Any]], l4_rows: Sequence[Dict[str, Any]]) -> Optional[str]:
+    seen: List[str] = []
+    for row in list(http_rows or []) + list(l4_rows or []):
+        target = str(row.get("target") or "").strip()
+        if target and target not in seen:
+            seen.append(target)
+    if not seen:
+        return None
+    preferred = ("dst", "dest", "destination", "app", "service", "src", "source")
+    by_lower = {item.lower(): item for item in seen}
+    for name in preferred:
+        if name in by_lower:
+            return by_lower[name]
+    return seen[0]
+
+
+def _probe_timeline_lane_label(target: str, protocol: str) -> str:
+    name = str(target or "probe").strip()
+    display = name.upper() if name.lower() == "vip" else name
+    return f"{display} {str(protocol).upper()}"
+
+
 def _mask_by_group_fields(df: pd.DataFrame, group_fields: Sequence[str], group_meta: pd.Series) -> pd.Series:
     if df.empty:
         return pd.Series([], dtype=bool)
@@ -3205,7 +3227,7 @@ def generate_plots(
                     include_source = run_meta.get("analysis_source", pd.Series([], dtype=str)).astype(str).replace("nan", "").nunique() > 1
                     include_batch = run_meta.get("batch_id", pd.Series([], dtype=str)).astype(str).replace("nan", "").nunique() > 1
                     method_values = timeline_rows.get("method", pd.Series([], dtype=str)).tolist()
-                    show_vip_overlay = bool(spec.get("show_vip_downtime_overlay", breakdown_kind == "event_critical_path"))
+                    show_vip_overlay = bool(spec.get("show_vip_downtime_overlay", False))
                     vip_overlay_color = str(spec.get("vip_downtime_overlay_color", "#B2182B"))
                     vip_overlay_label = str(spec.get("vip_downtime_overlay_label", "VIP HTTP downtime"))
                     vip_overlay_rows = (
@@ -3723,31 +3745,39 @@ def generate_plots(
                     ctx = _load_probe_timeline_context(run_row)
                     summary_data = ctx["summary"]
                     run_dir = ctx["run_dir"]
-                    target = str(spec.get("target", "vip"))
                     protocols = [str(item).strip().lower() for item in (spec.get("protocols") or ["http", "l4"])]
                     protocols = [item for item in protocols if item in ("http", "l4")]
                     if not protocols:
                         protocols = ["http", "l4"]
 
+                    all_http_rows: List[Dict[str, Any]] = []
+                    all_l4_rows: List[Dict[str, Any]] = []
                     http_rows: List[Dict[str, Any]] = []
                     l4_rows: List[Dict[str, Any]] = []
                     http_path = _resolve_monitor_csv_path(run_dir, summary_data, "http") if "http" in protocols else None
                     l4_path = _resolve_monitor_csv_path(run_dir, summary_data, "l4") if "l4" in protocols else None
                     if http_path is not None:
-                        http_rows = [row for row in _parse_http_probe_rows(http_path) if row.get("target") == target]
+                        all_http_rows = _parse_http_probe_rows(http_path)
                     if l4_path is not None:
-                        l4_rows = [row for row in _parse_l4_probe_rows(l4_path) if row.get("target") == target]
+                        all_l4_rows = _parse_l4_probe_rows(l4_path)
+                    target = str(spec.get("target") or "").strip()
+                    if not target:
+                        target = _probe_timeline_default_target(all_http_rows if "http" in protocols else [], all_l4_rows if "l4" in protocols else []) or "probe"
+                    http_rows = [row for row in all_http_rows if row.get("target") == target]
+                    l4_rows = [row for row in all_l4_rows if row.get("target") == target]
 
                     lanes: List[Tuple[Any, ...]] = []
                     if "http" in protocols and http_rows:
                         lanes.append(
                             (
-                                "VIP HTTP",
+                                _probe_timeline_lane_label(target, "http"),
                                 http_rows,
                                 lambda row: row.get("status") != 200,
-                                _parse_int(summary_data.get("vip_http_segment_start_ms")),
-                                _parse_int(summary_data.get("vip_http_segment_end_ms")),
-                                _probe_client_visible_segments(summary_data),
+                                _parse_int(summary_data.get("http_segment_start_ms"))
+                                or (_parse_int(summary_data.get("vip_http_segment_start_ms")) if target.lower() == "vip" else None),
+                                _parse_int(summary_data.get("http_segment_end_ms"))
+                                or (_parse_int(summary_data.get("vip_http_segment_end_ms")) if target.lower() == "vip" else None),
+                                _probe_client_visible_segments(summary_data) if target.lower() == "vip" else [],
                             )
                         )
                     elif "http" in protocols:
@@ -3755,11 +3785,13 @@ def generate_plots(
                     if "l4" in protocols and l4_rows:
                         lanes.append(
                             (
-                                "VIP L4",
+                                _probe_timeline_lane_label(target, "l4"),
                                 l4_rows,
                                 lambda row: row.get("state") == "down",
-                                _parse_int(summary_data.get("vip_l4_segment_start_ms")),
-                                _parse_int(summary_data.get("vip_l4_segment_end_ms")),
+                                _parse_int(summary_data.get("l4_segment_start_ms"))
+                                or (_parse_int(summary_data.get("vip_l4_segment_start_ms")) if target.lower() == "vip" else None),
+                                _parse_int(summary_data.get("l4_segment_end_ms"))
+                                or (_parse_int(summary_data.get("vip_l4_segment_end_ms")) if target.lower() == "vip" else None),
                                 [],
                             )
                         )
@@ -3935,7 +3967,7 @@ def generate_plots(
                     ax.axvline(0.0, color="#111111", linewidth=1.35, alpha=0.9, zorder=4)
                     run_label = str(run_row.get("run_id") or (run_dir.name if run_dir else "run"))
                     ax.set_title(str(spec.get("title") or f"Probe State Timeline: {run_label}"), fontweight="semibold")
-                    ax.set_xlabel("Zeit relativ zu VIP-Cutover/Analyzer-Anker [ms]")
+                    ax.set_xlabel("Zeit relativ zu Cutover/Analyzer-Anker [ms]")
                     ax.set_ylabel("Signal")
                     ax.set_yticks(y_positions)
                     ax.set_yticklabels([lane[0] for lane in lanes])

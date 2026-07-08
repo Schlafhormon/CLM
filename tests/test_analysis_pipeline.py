@@ -617,6 +617,77 @@ class AnalysisPipelineTests(unittest.TestCase):
             self.assertEqual(len(outputs), 1)
             self.assertTrue(Path(outputs[0]).exists())
 
+    def test_probe_state_timeline_defaults_to_non_vip_target_when_unspecified(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = root / "run-non-vip"
+            monitor_dir = run_dir / "monitor"
+            monitor_dir.mkdir(parents=True)
+            (monitor_dir / "mon-http.csv").write_text(
+                "\n".join(
+                    [
+                        "ts_iso,ts_ms,target,status,rt_ms,ttfb_ms,headers_ms,dns_ms,tcp_ms,tls_ms,bytes,err,t_start_ms,t_end_ms",
+                        "t,900,src,200,1,1,1,0,0,0,0,,890,900",
+                        "t,1000,dst,503,1,1,1,0,0,0,0,,990,1000",
+                        "t,1200,dst,200,1,1,1,0,0,0,0,,1190,1200",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (monitor_dir / "mon-l4.csv").write_text(
+                "\n".join(
+                    [
+                        "ts_iso,ts_ms,target,host,port,state,t_start_ms,t_end_ms",
+                        "t,910,src,src,8080,up,900,910",
+                        "t,1010,dst,dst,8080,down,1000,1010",
+                        "t,1210,dst,dst,8080,up,1200,1210",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            summary_path = run_dir / "summary.json"
+            summary_path.write_text(json.dumps({"run_id": "run-non-vip", "cutover_ms": 950}), encoding="utf-8")
+            metrics = pd.DataFrame(
+                [
+                    {
+                        "run_id": "run-non-vip",
+                        "run_dir": str(run_dir),
+                        "summary_path": str(summary_path),
+                        "method": "precopy",
+                        "load": "idle",
+                        "excluded": False,
+                    }
+                ]
+            )
+            config = {
+                "plots": {
+                    "enabled": True,
+                    "dpi": 90,
+                    "formats": ["png"],
+                    "definitions": [
+                        {
+                            "id": "probe_timeline_non_vip",
+                            "kind": "probe_state_timeline",
+                            "dataset": "metrics",
+                            "protocols": ["http", "l4"],
+                            "window_ms_before": 200,
+                            "window_ms_after": 600,
+                        }
+                    ],
+                },
+            }
+
+            outputs = generate_plots(
+                df=metrics,
+                config=config,
+                plots_dir=root / "plots",
+                logger=lambda _msg: None,
+                datasets={"metrics": metrics},
+            )
+
+            self.assertEqual(len(outputs), 1)
+            self.assertTrue(Path(outputs[0]).exists())
+
     def test_probe_state_timeline_bounds_focuses_on_activity(self):
         rows = [
             {"ts_ms": 900, "status": 200},

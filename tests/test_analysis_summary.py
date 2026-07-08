@@ -47,6 +47,18 @@ class CoreSummaryTests(unittest.TestCase):
         self.assertAlmostEqual(summary.downtime_ms, 42.0)
         self.assertEqual(summary.downtime["vip_http_client_visible_total_down_ms"], 125.0)
 
+    def test_build_core_summary_prefers_nested_core_downtime_over_top_level_vip_metrics(self):
+        summary = build_core_summary(
+            {
+                "status": "ok",
+                "vip_http_client_visible_total_down_ms": 125,
+                "downtime": {"http_downtime_ms": 41, "l4_downtime_ms": 52},
+            }
+        )
+
+        self.assertAlmostEqual(summary.downtime_ms, 41.0)
+        self.assertEqual(summary.downtime["vip_http_client_visible_total_down_ms"], 125.0)
+
     def test_summarize_run_dir_merges_status_summary_and_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp)

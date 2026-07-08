@@ -287,6 +287,53 @@ class MonitorDowntimeSemanticsTests(unittest.TestCase):
             self.assertEqual(report["precopy_restore_return_overhead_ms"], 50)
             self.assertEqual(report["precopy_restore_exec_to_cutover_ms"], 150)
 
+    def test_analyze_run_handles_non_vip_monitor_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "mon"
+            (Path(tmp) / "mon-http.csv").write_text(
+                "\n".join(
+                    [
+                        "ts_iso,ts_ms,target,status,rt_ms,ttfb_ms,headers_ms,dns_ms,tcp_ms,tls_ms,bytes,err,t_start_ms,t_end_ms",
+                        "t,1000,src,200,1,1,1,0,0,0,0,,990,1000",
+                        "t,1300,dst,200,1,1,1,0,0,0,0,,1290,1300",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (Path(tmp) / "mon-l4.csv").write_text(
+                "\n".join(
+                    [
+                        "ts_iso,ts_ms,target,host,port,state,t_start_ms,t_end_ms",
+                        "t,1010,src,src,8080,up,1000,1010",
+                        "t,1320,dst,dst,8080,up,1310,1320",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            events_path = Path(tmp) / "events.ndjson"
+            events_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps({"ts_unix_ms": 1050, "event": "final_dump_start", "clock_domain": "source"}),
+                        json.dumps({"ts_unix_ms": 1250, "event": "health_ok", "clock_domain": "source"}),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = MON.analyze_run(str(base), events_path=str(events_path))
+
+            self.assertEqual(rc, 0)
+            report = json.loads(buf.getvalue().split("\n=== Downtime Summary ===", 1)[0])
+            self.assertEqual(report["http_downtime_ms"], 300)
+            self.assertEqual(report["l4_downtime_ms"], 310)
+            self.assertIsNone(report["vip_http_client_visible_total_down_ms"])
+            self.assertIsNone(report["vip_http_downtime_ms"])
+            self.assertIsNone(report["vip_http_samples_before"])
+
     def test_analyze_run_counts_early_postcopy_http_timeout_separately_from_cutover_near(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp) / "mon"

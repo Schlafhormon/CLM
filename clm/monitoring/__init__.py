@@ -15,6 +15,7 @@ from clm.monitoring.legacy import (
     parse_legacy_http_csv,
     parse_legacy_l4_csv,
 )
+from clm.monitoring.analysis import analyze_run
 from clm.monitoring.probes import ProbeSpec, parse_probe_spec, parse_probe_specs
 
 __all__ = [
@@ -26,6 +27,7 @@ __all__ = [
     "ProbeResult",
     "ProbeSpec",
     "TimelineEvent",
+    "analyze_run",
     "evaluate_app_readiness",
     "load_legacy_probe_results",
     "parse_legacy_http_csv",

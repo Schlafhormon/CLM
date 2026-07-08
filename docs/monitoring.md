@@ -40,12 +40,18 @@ The code boundary for this model is `clm/monitoring/`:
   `DowntimeWindow` and `AppReadinessResult`.
 - `legacy.py` translates current monitor CSV artifacts into stable probe
   results.
+- `analysis.py` contains the legacy monitor CSV/NDJSON summary logic that used
+  to live in `tools/monitor/monitor.py`. New code can import it from
+  `clm.monitoring.analysis`; the script still re-exports those names for CLI
+  compatibility.
 
 ## Legacy Or Optional Monitoring
 
-The existing `tools/monitor/monitor.py` remains the runtime monitor for now. It
-also contains research-oriented functionality that should stay available but
-not define the core monitoring model:
+The existing `tools/monitor/monitor.py` remains the runtime monitor for now.
+Analysis of its artifacts now lives in `clm.monitoring.analysis`, while the
+script keeps a compatibility wrapper for `--analyze` and historical private
+helper imports. The runtime monitor still exposes research-oriented target
+families that should stay available but not define the core monitoring model:
 
 - info targets;
 - counter targets;

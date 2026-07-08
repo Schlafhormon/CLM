@@ -7,6 +7,10 @@ CLM now has an explicit analysis boundary:
   duration, downtime, errors, and artifact paths.
 - `clm.analysis.advanced` is the optional compatibility namespace for the
   existing batch, statistics, and plot pipeline.
+- `clm.monitoring.analysis` owns single-run analysis of legacy monitor
+  artifacts (`<base>-http.csv`, `<base>-l4.csv`, stream/download/upload
+  NDJSON). `tools/monitor/monitor.py --analyze` delegates through that module
+  and remains CLI-compatible.
 - `clm.analysis_pipeline` remains import-compatible for existing scripts and
   tests, but new call sites should prefer `clm.analysis.advanced` for heavy
   analysis helpers.
@@ -29,6 +33,17 @@ should become an optional install extra or separate package namespace.
 
 `build_core_summary(...)` can also consume a mapping or a
 `MigrationResult`-like object directly.
+
+Core summaries prioritize generic downtime fields in this order:
+`http_downtime_ms`, `l4_downtime_ms`, then `downtime_ms`. Legacy VIP fields
+such as `vip_http_client_visible_total_down_ms`, `vip_http_downtime_ms`, and
+`vip_l4_downtime_ms` are still parsed for compatibility, but they are fallback
+inputs rather than core assumptions.
+
+Single-run probe timeline plots also avoid a VIP default when no target is
+specified. They infer a generic target such as `dst` from monitor artifacts.
+VIP timelines and VIP downtime overlays remain available when requested
+explicitly by config, especially in legacy research or paper presets.
 
 ## Remaining Split Work
 

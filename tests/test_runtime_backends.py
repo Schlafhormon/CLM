@@ -107,6 +107,28 @@ class RuntimeBackendMigrationTests(unittest.TestCase):
         self.assertIn("export TRAFFIC_PREPARE_CMD='lbctl drain source'", script)
         self.assertIn("export TRAFFIC_SWITCH_CMD='lbctl activate dest'", script)
         self.assertIn("export TRAFFIC_VERIFY_CMD='curl -fsS http://service/health'", script)
+        self.assertNotIn("export VIP_ADDR", script)
+        self.assertNotIn("export VIP_IF_SRC", script)
+
+    def test_runc_backend_external_traffic_does_not_export_vip_cutover_env(self):
+        cfg = deepcopy(cli.DEFAULTS)
+        cfg["repo_path"] = "~/CLM"
+        cfg["traffic"] = {
+            "mode": "external",
+            "hooks": {"verify": ["curl", "-fsS", "http://service/health"]},
+        }
+
+        script = RuncBackend().build_legacy_migration_script(
+            cfg,
+            method="precopy",
+            run_id="run-external",
+            events_log="/tmp/events.ndjson",
+        )
+
+        self.assertIn("export TRAFFIC_MODE=external", script)
+        self.assertIn("export TRAFFIC_VERIFY_CMD='curl -fsS http://service/health'", script)
+        self.assertNotIn("export VIP_ADDR", script)
+        self.assertNotIn("export VIP_CONNTRACK_CLEAR_SRC", script)
 
     def test_docker_migration_fails_fast(self):
         cfg = deepcopy(cli.DEFAULTS)

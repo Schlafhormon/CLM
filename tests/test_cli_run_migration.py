@@ -98,6 +98,98 @@ class RunMigrationTests(unittest.TestCase):
 
         self.assertIn("Configured CRIU custom_build 'criu-clm-tcp' is not supported", err)
 
+    def test_run_cli_blocks_command_shell_string_hook_before_side_effects(self):
+        cfg = deepcopy(cli.DEFAULTS)
+        cfg["traffic"] = {
+            "mode": "command",
+            "hooks": {
+                "switch": "lbctl activate dest",
+            },
+        }
+
+        err = self._run_cli_expect_capability_gate(cfg)
+
+        self.assertIn("traffic hook switch is a shell string", err)
+        self.assertIn("allow_shell", err)
+
+    def test_external_run_baseline_does_not_emit_vip_ip_conntrack_or_arping(self):
+        cfg = deepcopy(cli.DEFAULTS)
+        cfg["traffic"] = {"mode": "external"}
+
+        captured = []
+
+        def fake_run_remote_streamed(host, script, **kwargs):
+            captured.append((host, script, kwargs))
+            return SimpleNamespace(returncode=0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg["paths"]["runs_root"] = str(Path(tmp) / "runs")
+            cfg["paths"]["logs_root"] = str(Path(tmp) / "logs")
+
+            with patch("clm.cli._run_remote_streamed", side_effect=fake_run_remote_streamed), \
+                 patch("clm.cli.collect_clock_offsets", return_value={}), \
+                 patch("clm.cli.time.sleep", return_value=None), \
+                 patch("clm.cli.create_legacy_run_link", return_value=None), \
+                 patch("clm.cli.cleanup_run_checkpoint_artifacts", side_effect=AssertionError("cleanup should be skipped")):
+                rc = cli.run_cli(
+                    cfg,
+                    method="precopy",
+                    repeats=1,
+                    load_flags=None,
+                    no_monitor=True,
+                    no_migrate=True,
+                    no_cleanup=True,
+                    auto_analyse=False,
+                    env_path="config/env.yaml",
+                    cli_argv=["run", "--method", "precopy", "--no-monitor", "--no-migrate"],
+                )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual([item[0] for item in captured], ["benke2", "benke1"])
+        combined = "\n".join(script for _, script, _ in captured)
+        self.assertIn("sudo runc --root=/run/runc delete -f \"$NAME\"", combined)
+        self.assertNotIn("ip addr add", combined)
+        self.assertNotIn("ip addr del", combined)
+        self.assertNotIn("conntrack -D", combined)
+        self.assertNotIn("arping", combined)
+        self.assertNotIn("export VIP_ADDR", combined)
+
+    def test_external_monitor_cmd_omits_vip_targets_and_uses_generic_burst_events(self):
+        cfg = deepcopy(cli.DEFAULTS)
+        cfg["traffic"] = {"mode": "external"}
+        cfg["monitor"]["burst_window_ms"] = 100
+
+        cmd = cli.monitor_cmd(cfg, "run-external", "/tmp/mon", events_log="/tmp/events.ndjson")
+        joined = " ".join(cmd)
+
+        self.assertIn("src=http://192.168.13.10:8080/health", joined)
+        self.assertIn("dst=http://192.168.13.15:8080/health", joined)
+        self.assertNotIn("vip=http://192.168.13.50:8080/health", joined)
+        self.assertNotIn("vip=192.168.13.50:8080", joined)
+        self.assertIn("traffic_switch_start", cmd)
+        self.assertIn("traffic_switch_done", cmd)
+        self.assertNotIn("vip_cutover_start", cmd)
+
+    def test_vip_run_baseline_keeps_legacy_vip_cleanup(self):
+        cfg = deepcopy(cli.DEFAULTS)
+
+        captured = []
+
+        def fake_run_remote_streamed(host, script, **kwargs):
+            captured.append((host, script, kwargs))
+            return SimpleNamespace(returncode=0)
+
+        with patch("clm.cli._run_remote_streamed", side_effect=fake_run_remote_streamed):
+            cli.cleanup_dest(cfg)
+            cli.reset_source(cfg)
+
+        combined = "\n".join(script for _, script, _ in captured)
+        self.assertIn("export VIP_ADDR=192.168.13.50", combined)
+        self.assertIn("sudo ip addr del \"${VIP_ADDR}${VIP_CIDR}\" dev \"$VIP_IF_DST\"", combined)
+        self.assertIn("sudo conntrack -D -d \"$VIP_ADDR\"", combined)
+        self.assertIn("sudo ip addr add \"${VIP_ADDR}${VIP_CIDR}\" dev \"$VIP_IF_SRC\"", combined)
+        self.assertIn("sudo arping -c 3 -A -I \"$VIP_IF_SRC\" \"$VIP_ADDR\"", combined)
+
     def test_precopy_run_migration_exports_shared_image_mode_by_default(self):
         cfg = deepcopy(cli.DEFAULTS)
         cfg["repo_path"] = "~/CLM"

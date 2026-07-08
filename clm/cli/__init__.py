@@ -613,6 +613,41 @@ def _resolve_postcopy_runtime_settings(post_cfg: Optional[dict]) -> dict:
     }
 
 
+def runtime_type_for(cfg: dict) -> str:
+    # Resolve the legacy runtime selection without constructing a backend.
+    runtime_cfg = cfg.get("runtime") or {}
+    container_cfg = cfg.get("container") or {}
+    return str(runtime_cfg.get("type") or container_cfg.get("runtime") or "runc").strip().lower()
+
+
+def traffic_backend_for(cfg: dict):
+    # Resolve the traffic backend from legacy config.
+    from clm.migration.traffic import select_traffic_backend
+
+    return select_traffic_backend(cfg)
+
+
+def traffic_mode_for(cfg: dict) -> str:
+    # Resolve the effective traffic mode, including legacy VIP fallback.
+    return str(traffic_backend_for(cfg).mode or "external").strip().lower()
+
+
+def traffic_uses_vip(cfg: dict) -> bool:
+    # True only for the explicit or legacy VIP compatibility backend.
+    return traffic_mode_for(cfg) == "vip"
+
+
+def traffic_port_for(cfg: dict) -> int:
+    # Port used by runtime health checks and default probes.
+    backend = traffic_backend_for(cfg)
+    port = getattr(backend.plan, "port", None)
+    if port in (None, ""):
+        port = (cfg.get("traffic") or {}).get("port")
+    if port in (None, ""):
+        port = (cfg.get("vip") or {}).get("port")
+    return _int_with_default(port, 8080)
+
+
 def repo_path_remote_for_bash(cfg: dict) -> str:
     # Build a remote Bash repository path.
     repo = cfg["repo_path"] or ""
@@ -726,11 +761,11 @@ def repo_path_remote(cfg: dict) -> str:
 
 def monitor_cmd(cfg: dict, run_id: str, base_out: str, load_modes=None, events_log: Optional[str] = None):
     # Build the monitor command.
-    vip = cfg["vip"]
-    port = vip["port"]
+    port = traffic_port_for(cfg)
     src_ip = host_ip(cfg, "source")
     dst_ip = host_ip(cfg, "dest")
-    vip_ip = vip["addr"]
+    use_vip = traffic_uses_vip(cfg)
+    vip_ip = (cfg.get("vip") or {}).get("addr")
     mon = cfg.get("monitor", {})
     active_loads = set(parse_load_modes(load_modes))
     load_cfg = cfg.get("load", {})
@@ -761,17 +796,20 @@ def monitor_cmd(cfg: dict, run_id: str, base_out: str, load_modes=None, events_l
         "--format", "csv",
         "--http-target", f"src=http://{src_ip}:{port}/health",
         "--http-target", f"dst=http://{dst_ip}:{port}/health",
-        "--http-target", f"vip=http://{vip_ip}:{port}/health",
         "--http-interval-ms", str(http_interval_ms),
         "--http-timeout-ms", str(http_timeout_ms),
         "--l4-target", f"src={src_ip}:{port}",
         "--l4-target", f"dst={dst_ip}:{port}",
-        "--l4-target", f"vip={vip_ip}:{port}",
         "--l4-interval-ms", str(l4_interval_ms),
         "--l4-timeout-ms", str(l4_timeout_ms),
         "--rotate-size-mb", str(mon.get("rotate_size_mb", 50)),
         "--tag", f"run_id={run_id}",
     ]
+    if use_vip and vip_ip:
+        cmd += [
+            "--http-target", f"vip=http://{vip_ip}:{port}/health",
+            "--l4-target", f"vip={vip_ip}:{port}",
+        ]
     if enable_info:
         cmd += [
             "--info-target", f"src=http://{src_ip}:{port}/info",
@@ -798,7 +836,16 @@ def monitor_cmd(cfg: dict, run_id: str, base_out: str, load_modes=None, events_l
             "--burst-http-interval-ms", str(int(mon.get("burst_http_interval_ms", 10))),
             "--burst-l4-interval-ms", str(int(mon.get("burst_l4_interval_ms", 10))),
         ]
-        for ev_name in (mon.get("burst_trigger_events") or ["vip_cutover_start", "vip_cutover_done"]):
+        configured_burst_events = mon.get("burst_trigger_events")
+        legacy_default_burst_events = (DEFAULTS.get("monitor") or {}).get("burst_trigger_events")
+        default_burst_events = (
+            ["vip_cutover_start", "vip_cutover_done"]
+            if use_vip
+            else ["traffic_switch_start", "traffic_switch_done"]
+        )
+        if not use_vip and configured_burst_events == legacy_default_burst_events:
+            configured_burst_events = None
+        for ev_name in (configured_burst_events or default_burst_events):
             cmd += ["--burst-trigger-event", str(ev_name)]
     if "download" in active_loads:
         dl = load_cfg.get("download", {})
@@ -1264,26 +1311,32 @@ def reset_source(cfg: dict, *, output_tag: str = "baseline:source") -> None:
 
     src = host_alias(cfg, "source")
     repo = repo_path_remote(cfg)
-    vip = cfg["vip"]
+    use_vip = traffic_uses_vip(cfg)
+    vip = cfg.get("vip") or {}
     container = cfg["container"]
     gunicorn_cfg = container.get("gunicorn") or {}
     gunicorn_workers = max(1, _int_with_default(gunicorn_cfg.get("workers"), 1))
     gunicorn_threads = max(1, _int_with_default(gunicorn_cfg.get("threads"), 4))
     src_ip = host_ip(cfg, "source")
-    port = vip["port"]
+    port = traffic_port_for(cfg)
 
     env_vars = {
         "REPO": repo,
         "BUNDLE": container["bundle"],
         "NAME": container["name"],
-        "VIP_ADDR": vip["addr"],
-        "VIP_CIDR": vip["cidr"],
-        "VIP_IF_SRC": vip["if_source"],
         "PORT": port,
         "SRC_IP": src_ip,
         "GUNICORN_WORKERS": gunicorn_workers,
         "GUNICORN_THREADS": gunicorn_threads,
     }
+    if use_vip:
+        env_vars.update(
+            {
+                "VIP_ADDR": vip["addr"],
+                "VIP_CIDR": vip["cidr"],
+                "VIP_IF_SRC": vip["if_source"],
+            }
+        )
     commands = [
 
         "sudo runc --root=/run/runc delete -f \"$NAME\" 2>/dev/null || true",
@@ -1291,11 +1344,17 @@ def reset_source(cfg: dict, *, output_tag: str = "baseline:source") -> None:
         "bash \"$REPO/scripts/patch_runc_bundle_for_criu.sh\" \"$BUNDLE\"",
         "sudo runc --root=/run/runc run --detach --bundle \"$BUNDLE\" --no-pivot \"$NAME\"",
         "sleep 2",
-        "sudo ip addr add \"${VIP_ADDR}${VIP_CIDR}\" dev \"$VIP_IF_SRC\" 2>/dev/null || true",
-        "sudo arping -c 3 -A -I \"$VIP_IF_SRC\" \"$VIP_ADDR\" || true",
         "curl -sS -o /dev/null -w '%{http_code}' --max-time 3 \"http://${SRC_IP}:${PORT}/health\" || true",
-        "curl -sS -o /dev/null -w '%{http_code}' --max-time 3 \"http://${VIP_ADDR}:${PORT}/health\" || true",
     ]
+    if runtime_type_for(cfg) != "runc":
+        log(f"{output_tag}: source runtime reset skipped for runtime={runtime_type_for(cfg)}")
+        return
+    if use_vip:
+        commands += [
+            "sudo ip addr add \"${VIP_ADDR}${VIP_CIDR}\" dev \"$VIP_IF_SRC\" 2>/dev/null || true",
+            "sudo arping -c 3 -A -I \"$VIP_IF_SRC\" \"$VIP_ADDR\" || true",
+            "curl -sS -o /dev/null -w '%{http_code}' --max-time 3 \"http://${VIP_ADDR}:${PORT}/health\" || true",
+        ]
     script = build_remote_script(env_vars, commands)
     _run_remote_streamed(src, script, check=True, tag=output_tag)
 
@@ -1304,20 +1363,32 @@ def cleanup_dest(cfg: dict, *, output_tag: str = "baseline:dest") -> None:
     # Clean the destination host.
 
     dst = host_alias(cfg, "dest")
-    vip = cfg["vip"]
+    use_vip = traffic_uses_vip(cfg)
+    vip = cfg.get("vip") or {}
     container = cfg["container"]
     env_vars = {
         "NAME": container["name"],
-        "VIP_ADDR": vip["addr"],
-        "VIP_CIDR": vip["cidr"],
-        "VIP_IF_DST": vip["if_dest"],
     }
+    if use_vip:
+        env_vars.update(
+            {
+                "VIP_ADDR": vip["addr"],
+                "VIP_CIDR": vip["cidr"],
+                "VIP_IF_DST": vip["if_dest"],
+            }
+        )
     commands = [
         "sudo runc --root=/run/runc delete -f \"$NAME\" 2>/dev/null || true",
-        "sudo ip addr del \"${VIP_ADDR}${VIP_CIDR}\" dev \"$VIP_IF_DST\" 2>/dev/null || true",
-        "sudo conntrack -D -d \"$VIP_ADDR\" 2>/dev/null || true",
         f"sudo rm -rf /var/lib/criu-local/runc/{shlex.quote(container['name'])} 2>/dev/null || true",
     ]
+    if runtime_type_for(cfg) != "runc":
+        log(f"{output_tag}: destination runtime cleanup skipped for runtime={runtime_type_for(cfg)}")
+        return
+    if use_vip:
+        commands[1:1] = [
+            "sudo ip addr del \"${VIP_ADDR}${VIP_CIDR}\" dev \"$VIP_IF_DST\" 2>/dev/null || true",
+            "sudo conntrack -D -d \"$VIP_ADDR\" 2>/dev/null || true",
+        ]
     script = build_remote_script(env_vars, commands)
     _run_remote_streamed(dst, script, check=True, tag=output_tag)
 
@@ -1326,22 +1397,34 @@ def cleanup_source(cfg: dict, *, output_tag: str = "abort:source") -> None:
     # Clean the source host.
 
     src = host_alias(cfg, "source")
-    vip = cfg["vip"]
+    use_vip = traffic_uses_vip(cfg)
+    vip = cfg.get("vip") or {}
     container = cfg["container"]
     lazy_port = int((cfg.get("postcopy") or {}).get("lazy_port", 27027))
     env_vars = {
         "NAME": container["name"],
-        "VIP_ADDR": vip["addr"],
-        "VIP_CIDR": vip["cidr"],
-        "VIP_IF_SRC": vip["if_source"],
         "LAZY_PORT": lazy_port,
     }
+    if use_vip:
+        env_vars.update(
+            {
+                "VIP_ADDR": vip["addr"],
+                "VIP_CIDR": vip["cidr"],
+                "VIP_IF_SRC": vip["if_source"],
+            }
+        )
     commands = [
         "sudo runc --root=/run/runc delete -f \"$NAME\" 2>/dev/null || true",
-        "sudo ip addr del \"${VIP_ADDR}${VIP_CIDR}\" dev \"$VIP_IF_SRC\" 2>/dev/null || true",
-        "sudo conntrack -D -d \"$VIP_ADDR\" 2>/dev/null || true",
         "sudo fuser -k \"${LAZY_PORT}/tcp\" 2>/dev/null || true",
     ]
+    if runtime_type_for(cfg) != "runc":
+        log(f"{output_tag}: source runtime cleanup skipped for runtime={runtime_type_for(cfg)}")
+        return
+    if use_vip:
+        commands[1:1] = [
+            "sudo ip addr del \"${VIP_ADDR}${VIP_CIDR}\" dev \"$VIP_IF_SRC\" 2>/dev/null || true",
+            "sudo conntrack -D -d \"$VIP_ADDR\" 2>/dev/null || true",
+        ]
     script = build_remote_script(env_vars, commands)
     _run_remote_streamed(src, script, check=True, tag=output_tag)
 
@@ -1564,6 +1647,7 @@ def analyze_run(cfg: dict, base_out: str, events_log: str, run_dir: str):
     migration = cfg.get("migration", {})
     post = cfg.get("postcopy", {})
     post_runtime = _resolve_postcopy_runtime_settings(post)
+    use_vip = traffic_uses_vip(cfg)
     precopy = cfg.get("precopy", {})
     vip = cfg["vip"]
     dst_ip = host_ip(cfg, "dest")
@@ -1621,7 +1705,8 @@ def analyze_run(cfg: dict, base_out: str, events_log: str, run_dir: str):
             "precopy_image_mode": str(precopy.get("image_mode", "shared")),
             "precopy_pre_dump_rounds": _int_with_default(precopy.get("pre_dump_rounds", 0), 0),
             "precopy_tcp_established": _int_with_default(precopy.get("tcp_established", 1), 1),
-            "postcopy_src_forwarding_enabled": post_runtime["src_forward_enable"] > 0,
+            "traffic_mode": traffic_mode_for(cfg),
+            "postcopy_src_forwarding_enabled": use_vip and post_runtime["src_forward_enable"] > 0,
             "postcopy_src_forwarding_mode": str(post.get("src_forwarding_mode", "iptables_dnat")),
             "postcopy_src_forwarding_target_host": str(post.get("src_forwarding_target_host", dst_ip)),
             "postcopy_src_forwarding_target_port": _int_with_default(post.get("src_forwarding_target_port", vip["port"]), vip["port"]),
@@ -1645,6 +1730,8 @@ def preflight(cfg: dict, dry_run: bool = False) -> int:
     # Run preflight checks.
 
     checks = []
+    runtime_type = runtime_type_for(cfg)
+    use_vip = traffic_uses_vip(cfg)
 
     def add(name, ok, detail="", warn=False):
         checks.append({"name": name, "ok": ok, "warn": warn, "detail": detail})
@@ -1745,7 +1832,12 @@ def preflight(cfg: dict, dry_run: bool = False) -> int:
             add(f"{role}: NFS write", False, str(e))
 
 
-        for tool in ("runc", "criu", "jq", "ss", "iptables", "conntrack", "arping", "curl", "ssh"):
+        required_tools = ["jq", "ss", "curl", "ssh"]
+        if runtime_type == "runc":
+            required_tools.extend(["runc", "criu"])
+        if use_vip:
+            required_tools.extend(["iptables", "conntrack", "arping"])
+        for tool in required_tools:
             try:
                 run_remote(host, f"command -v {tool} >/dev/null", check=True)
                 add(f"{role}: tool {tool}", True)
@@ -1759,13 +1851,16 @@ def preflight(cfg: dict, dry_run: bool = False) -> int:
             add(f"{role}: sudo -n", False, str(e))
 
 
-        vip_port = cfg["vip"]["port"]
+        vip_port = traffic_port_for(cfg)
         if role == "dest":
-            try:
-                run_remote(host, f"ss -lnt | grep -qE ':{vip_port}\\\\b' && exit 2 || true", check=True)
-                add("dest: VIP port frei", True, f":{vip_port}")
-            except Exception:
-                add("dest: VIP port frei", False, f":{vip_port} belegt")
+            if use_vip:
+                try:
+                    run_remote(host, f"ss -lnt | grep -qE ':{vip_port}\\\\b' && exit 2 || true", check=True)
+                    add("dest: VIP port frei", True, f":{vip_port}")
+                except Exception:
+                    add("dest: VIP port frei", False, f":{vip_port} belegt")
+            else:
+                add("dest: traffic port check", True, f"skipped for traffic.mode={traffic_mode_for(cfg)}", warn=True)
         if role == "source":
             lazy_port = cfg["postcopy"]["lazy_port"]
             try:
@@ -1848,12 +1943,13 @@ def run_cli(
     if method == "postcopy":
         post = cfg.setdefault("postcopy", {})
         post_runtime = _resolve_postcopy_runtime_settings(post)
-        src_forward_enable = post_runtime["src_forward_enable"]
+        use_vip = traffic_uses_vip(cfg)
+        src_forward_enable = post_runtime["src_forward_enable"] if use_vip else 0
         readiness_stable_successes = post_runtime["readiness_stable_successes"]
         readiness_timeout_ms = post_runtime["readiness_timeout_ms"]
-        if src_forward_enable <= 0:
+        if use_vip and src_forward_enable <= 0:
             log("WARN: postcopy src_forwarding_enabled=0 -> VIP-HTTP-Downtime typischerweise deutlich hoeher.")
-        if src_forward_enable > 0 and post_runtime["corrected"]:
+        if use_vip and src_forward_enable > 0 and post_runtime["corrected"]:
             raw_stable = post_runtime["readiness_stable_successes_raw"]
             raw_timeout = post_runtime["readiness_timeout_ms_raw"]
             post["readiness_stable_successes"] = readiness_stable_successes
@@ -2036,7 +2132,10 @@ def run_cli(
                     progress.update(phase="no-migrate", run_index=i, done=i - 1, failed=failed_runs)
                     log(f"Run {run_id}: no-migrate (monitoring only)")
                     append_event({"event": "control_run"})
-                    append_event({"event": "vip_cutover_start"})
+                    if traffic_uses_vip(cfg):
+                        append_event({"event": "vip_cutover_start"})
+                    else:
+                        append_event({"event": "traffic_switch_start", "mode": traffic_mode_for(cfg)})
                     time.sleep(20)
 
                 time.sleep(2)

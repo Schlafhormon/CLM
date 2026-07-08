@@ -8,12 +8,20 @@ the existing runc lab scripts.
 
 - `external`: CLM does not switch traffic. Use this when a load balancer,
   service mesh, route controller, or operator changes traffic outside CLM. A
-  `verify` hook can still be configured.
+  `verify` hook can still be configured. The Python `clm run` baseline and
+  cleanup path will not add/delete VIP addresses, flush VIP conntrack state, or
+  send gratuitous ARP in this mode.
 - `none`: alias for `external`.
 - `command`: CLM runs configured command hooks for `prepare`, `switch`,
-  `verify`, and optional `rollback`.
+  `verify`, and optional `rollback`. Hooks are the only traffic handoff action;
+  CLM does not perform VIP IP manipulation for this mode.
 - `vip`: compatibility adapter for the existing VIP/GARP/conntrack logic used
   by the current runc scripts.
+
+For `external` and `command`, CLM still performs the configured migration and
+destination readiness/health checks. Default monitoring tracks source and
+destination probes only. VIP probes and VIP burst events are enabled by the
+`vip` backend or by explicit monitor/load configuration.
 
 ## Examples
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import json
 import tempfile
 import unittest
 import shlex
@@ -80,10 +81,114 @@ class RuntimeBackendMigrationTests(unittest.TestCase):
 
         self.assertTrue(result.ok)
         self.assertEqual(result.artifacts["returncode"], 0)
+        self.assertEqual(result.traffic["mode"], "vip")
+        self.assertEqual(result.phases["runtime"]["status"], "ok")
         self.assertEqual(captured["host"], "benke1")
         self.assertIn("export MODE=runc", captured["script"])
         self.assertIn("export TRAFFIC_MODE=vip", captured["script"])
         self.assertIn("bash \"$REPO/scripts/migrate_precopy.sh\"", captured["script"])
+
+    def test_runc_backend_runtime_failure_stays_failed_without_restore_done(self):
+        cfg = deepcopy(cli.DEFAULTS)
+        cfg["repo_path"] = "~/CLM"
+
+        def fake_run_remote(host, script, **kwargs):
+            return SimpleNamespace(returncode=4)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            migrate_log = Path(tmp) / "migrate" / "precopy.log"
+            events_log = Path(tmp) / "events.ndjson"
+            with patch("clm.cli.run_remote", side_effect=fake_run_remote):
+                result = RuncBackend().migrate(
+                    cfg,
+                    method="precopy",
+                    run_id="runtime-failed",
+                    events_log=str(events_log),
+                    migrate_log=str(migrate_log),
+                )
+
+        self.assertEqual(result.status, "failed")
+        self.assertFalse(result.ok)
+        self.assertEqual(result.phases["runtime"]["returncode"], 4)
+        self.assertNotEqual(result.phases["restore"]["ok"], True)
+
+    def test_runc_backend_restore_done_traffic_verify_failure_is_structured_partial(self):
+        cfg = deepcopy(cli.DEFAULTS)
+        cfg["repo_path"] = "~/CLM"
+        cfg["traffic"] = {
+            "mode": "command",
+            "hooks": {"verify": ["curl", "-fsS", "http://service/health"]},
+        }
+
+        def fake_run_remote(host, script, **kwargs):
+            Path(events_log).write_text(
+                "\n".join(
+                    json.dumps(event)
+                    for event in (
+                        {"event": "traffic_config", "mode": "command"},
+                        {"event": "restore_start", "ts_unix_ms": 1000},
+                        {"event": "restore_done", "ts_unix_ms": 1100},
+                        {"event": "traffic_verify_start", "mode": "command", "ts_unix_ms": 1200},
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            return SimpleNamespace(returncode=7)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            migrate_log = Path(tmp) / "migrate" / "precopy.log"
+            events_log = str(Path(tmp) / "events.ndjson")
+            with patch("clm.cli.run_remote", side_effect=fake_run_remote):
+                result = RuncBackend().migrate(
+                    cfg,
+                    method="precopy",
+                    run_id="traffic-failed",
+                    events_log=events_log,
+                    migrate_log=str(migrate_log),
+                )
+
+        self.assertEqual(result.status, "partial")
+        self.assertEqual(result.phases["restore"]["ok"], True)
+        self.assertEqual(result.traffic["mode"], "command")
+        self.assertEqual(result.traffic["failed_action"], "verify")
+        self.assertEqual(result.traffic["actions"]["verify"]["returncode"], 7)
+
+    def test_runc_backend_required_postcopy_readiness_failure_stays_failed(self):
+        cfg = deepcopy(cli.DEFAULTS)
+        cfg["repo_path"] = "~/CLM"
+
+        def fake_run_remote(host, script, **kwargs):
+            Path(events_log).write_text(
+                "\n".join(
+                    json.dumps(event)
+                    for event in (
+                        {"event": "restore_start", "ts_unix_ms": 1000},
+                        {"event": "restore_done", "ts_unix_ms": 1100},
+                        {"event": "dest_readiness_wait_start", "ts_unix_ms": 1200},
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            return SimpleNamespace(returncode=8)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            migrate_log = Path(tmp) / "migrate" / "postcopy.log"
+            events_log = str(Path(tmp) / "events.ndjson")
+            with patch("clm.cli.run_remote", side_effect=fake_run_remote):
+                result = RuncBackend().migrate(
+                    cfg,
+                    method="postcopy",
+                    run_id="probe-failed",
+                    events_log=events_log,
+                    migrate_log=str(migrate_log),
+                )
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.phases["restore"]["ok"], True)
+        self.assertTrue(result.probe_readiness["required"])
+        self.assertFalse(result.probe_readiness["ok"])
 
     def test_runc_backend_exports_command_traffic_hooks(self):
         cfg = deepcopy(cli.DEFAULTS)

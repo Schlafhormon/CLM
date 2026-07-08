@@ -113,6 +113,29 @@ class CoreSummaryTests(unittest.TestCase):
             self.assertFalse(summary.ok)
             self.assertIn("migration rc=1", summary.errors)
 
+    def test_summarize_run_dir_keeps_runtime_failure_failed_when_restore_not_done(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "status.json").write_text(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "error": "migration rc=4",
+                        "phases": {
+                            "runtime": {"status": "failed", "ok": False, "returncode": 4},
+                            "restore": {"status": "failed", "ok": False, "returncode": 4},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (run_dir / "summary.json").write_text(json.dumps({"status": "ok"}), encoding="utf-8")
+
+            summary = summarize_run_dir(run_dir)
+
+            self.assertEqual(summary.status, "failed")
+            self.assertFalse(summary.ok)
+
     def test_summarize_run_dir_marks_analysis_failure_after_runtime_ok_as_partial(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp)
@@ -168,6 +191,42 @@ class CoreSummaryTests(unittest.TestCase):
             self.assertEqual(summary.status, "partial")
             self.assertFalse(summary.ok)
 
+    def test_summarize_run_dir_marks_restore_ok_traffic_verify_failure_as_partial_even_with_failed_run_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "status.json").write_text(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "error": "migration rc=7",
+                        "phases": {
+                            "runtime": {"status": "failed", "ok": False, "returncode": 7},
+                            "restore": {"status": "ok", "ok": True, "completed": True},
+                            "traffic": {
+                                "status": "failed",
+                                "ok": False,
+                                "mode": "command",
+                                "failed_action": "verify",
+                            },
+                        },
+                        "traffic": {
+                            "mode": "command",
+                            "status": "failed",
+                            "ok": False,
+                            "failed_action": "verify",
+                            "actions": {"verify": {"status": "failed", "ok": False, "returncode": 7}},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (run_dir / "summary.json").write_text(json.dumps({"status": "ok"}), encoding="utf-8")
+
+            summary = summarize_run_dir(run_dir)
+
+            self.assertEqual(summary.status, "partial")
+            self.assertFalse(summary.ok)
+
     def test_summarize_run_dir_marks_required_probe_failure_as_failed(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp)
@@ -194,6 +253,32 @@ class CoreSummaryTests(unittest.TestCase):
 
             self.assertEqual(summary.status, "failed")
             self.assertFalse(summary.ok)
+
+    def test_summarize_run_dir_optional_probe_failure_is_not_failed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "status.json").write_text(
+                json.dumps({"status": "ok", "analyze_rc": 0}),
+                encoding="utf-8",
+            )
+            (run_dir / "summary.json").write_text(
+                json.dumps(
+                    {
+                        "status": "ok",
+                        "app_readiness": {
+                            "required": False,
+                            "ready": False,
+                            "failed_optional": ["secondary-health"],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            summary = summarize_run_dir(run_dir)
+
+            self.assertNotEqual(summary.status, "failed")
+            self.assertEqual(summary.status, "ok")
 
     def test_build_core_summary_accepts_migration_result(self):
         result = MigrationResult(

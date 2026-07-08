@@ -6,6 +6,8 @@ of rewriting checkpoint/restore orchestration in Python.
 
 from __future__ import annotations
 
+import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -87,6 +89,15 @@ class RuncBackend(RuntimeBackend):
                     "transfer_mode": transfer.mode,
                     "transfer_implemented": False,
                 },
+                phases={
+                    "transfer": {
+                        "status": "failed",
+                        "ok": False,
+                        "mode": transfer.mode,
+                        "implemented": False,
+                        "returncode": 2,
+                    }
+                },
             )
         script = self.build_legacy_migration_script(
             config,
@@ -99,7 +110,21 @@ class RuncBackend(RuntimeBackend):
         with open(migrate_log, "w", encoding="utf-8") as fp:
             result = legacy_cli.run_remote(src, script, check=False, stdout=fp, stderr=fp)
 
-        status = "ok" if result.returncode == 0 else "failed"
+        events = _read_events(events_log)
+        traffic = _traffic_result_from_events(
+            events,
+            returncode=result.returncode,
+            fallback_mode=select_traffic_backend(config).mode,
+            migrate_log=migrate_log,
+        )
+        probe_readiness = _probe_readiness_from_events(events, returncode=result.returncode)
+        phases = _phase_results_from_events(
+            events,
+            returncode=result.returncode,
+            traffic=traffic,
+            probe_readiness=probe_readiness,
+        )
+        status = _status_from_structured_result(result.returncode, phases, traffic, probe_readiness)
         errors = () if result.returncode == 0 else (f"runc legacy migration exited with rc={result.returncode}",)
         return MigrationResult(
             migration_id=run_id,
@@ -107,7 +132,15 @@ class RuncBackend(RuntimeBackend):
             started_at=started_at,
             ended_at=datetime.now(timezone.utc),
             errors=errors,
-            artifacts={"events_log": events_log, "migrate_log": migrate_log, "returncode": result.returncode},
+            artifacts={
+                "events_log": events_log,
+                "migrate_log": migrate_log,
+                "returncode": result.returncode,
+                "traffic_mode": traffic.get("mode"),
+            },
+            phases=phases,
+            traffic=traffic,
+            probe_readiness=probe_readiness,
         )
 
     def build_legacy_migration_script(self, config: dict[str, Any], *, method: str, run_id: str, events_log: str) -> str:
@@ -194,3 +227,226 @@ class RuncBackend(RuntimeBackend):
             "scripts/migrate_precopy_vip_cutover.sh",
             "scripts/migrate_postcopy_lazy_pages_vip_cutover.sh",
         )
+
+
+def _read_events(events_log: str) -> list[dict[str, Any]]:
+    path = Path(events_log)
+    if not path.exists():
+        return []
+    events: list[dict[str, Any]] = []
+    try:
+        with open(path, "r", encoding="utf-8") as fp:
+            for line in fp:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    value = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(value, dict):
+                    events.append(value)
+    except OSError:
+        return []
+    return events
+
+
+def _event_names(events: list[dict[str, Any]]) -> set[str]:
+    return {str(event.get("event") or "") for event in events}
+
+
+def _first_event(events: list[dict[str, Any]], name: str) -> dict[str, Any] | None:
+    for event in events:
+        if event.get("event") == name:
+            return event
+    return None
+
+
+def _last_event(events: list[dict[str, Any]], name: str) -> dict[str, Any] | None:
+    for event in reversed(events):
+        if event.get("event") == name:
+            return event
+    return None
+
+
+def _event_time(event: dict[str, Any] | None) -> Any:
+    if not event:
+        return None
+    return event.get("ts_unix_ms") or event.get("ts_ms")
+
+
+def _traffic_mode_from_log(migrate_log: str) -> str | None:
+    path = Path(migrate_log)
+    if not path.exists():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    match = re.search(r"(?:^|\s)traffic_mode=([^\s]+)", text)
+    return match.group(1) if match else None
+
+
+def _traffic_result_from_events(
+    events: list[dict[str, Any]],
+    *,
+    returncode: int,
+    fallback_mode: str,
+    migrate_log: str,
+) -> dict[str, Any]:
+    names = _event_names(events)
+    config = _first_event(events, "traffic_config")
+    mode = (
+        (config or {}).get("mode")
+        or _first_event_field(events, ("traffic_prepare_start", "traffic_switch_start", "traffic_verify_start"), "mode")
+        or _traffic_mode_from_log(migrate_log)
+        or fallback_mode
+    )
+    actions: dict[str, dict[str, Any]] = {}
+    failed_action: str | None = None
+    for action in ("prepare", "switch", "verify"):
+        start_name = f"traffic_{action}_start"
+        done_name = f"traffic_{action}_done"
+        skipped_name = f"traffic_{action}_skipped"
+        started = start_name in names
+        done = done_name in names
+        skipped = skipped_name in names
+        action_mode = (
+            (_last_event(events, done_name) or {}).get("mode")
+            or (_last_event(events, skipped_name) or {}).get("mode")
+            or (_last_event(events, start_name) or {}).get("mode")
+            or mode
+        )
+        status = "ok" if done else "skipped" if skipped else "running" if started else "unknown"
+        action_result: dict[str, Any] = {
+            "action": action,
+            "mode": action_mode,
+            "status": status,
+            "ok": done or skipped,
+            "skipped": skipped,
+            "started": started,
+            "completed": done,
+        }
+        if started:
+            action_result["started_at_ms"] = _event_time(_last_event(events, start_name))
+        if done:
+            done_event = _last_event(events, done_name) or {}
+            action_result["ended_at_ms"] = _event_time(done_event)
+            if "dur_ms" in done_event:
+                action_result["duration_ms"] = done_event.get("dur_ms")
+        if skipped:
+            skipped_event = _last_event(events, skipped_name) or {}
+            action_result["reason"] = skipped_event.get("reason")
+        if returncode != 0 and started and not done and not skipped:
+            action_result.update({"status": "failed", "ok": False, "returncode": returncode})
+            failed_action = action
+        actions[action] = action_result
+
+    failed = failed_action is not None
+    return {
+        "mode": str(mode),
+        "status": "failed" if failed else "ok" if returncode == 0 else "unknown",
+        "ok": False if failed else True if returncode == 0 else None,
+        "returncode": returncode,
+        "failed_action": failed_action,
+        "actions": actions,
+    }
+
+
+def _first_event_field(events: list[dict[str, Any]], names: tuple[str, ...], field: str) -> Any:
+    for name in names:
+        event = _first_event(events, name)
+        if event and field in event:
+            return event.get(field)
+    return None
+
+
+def _probe_readiness_from_events(events: list[dict[str, Any]], *, returncode: int) -> dict[str, Any]:
+    names = _event_names(events)
+    started = "dest_readiness_wait_start" in names
+    ok = "dest_readiness_ok" in names
+    if not started and not ok:
+        return {}
+    status = "ok" if ok else "failed" if returncode != 0 else "unknown"
+    return {
+        "name": "postcopy-destination-readiness",
+        "required": True,
+        "ready": bool(ok),
+        "status": status,
+        "ok": bool(ok),
+        "started": started,
+        "returncode": returncode if status == "failed" else None,
+    }
+
+
+def _phase_results_from_events(
+    events: list[dict[str, Any]],
+    *,
+    returncode: int,
+    traffic: dict[str, Any],
+    probe_readiness: dict[str, Any],
+) -> dict[str, Any]:
+    names = _event_names(events)
+    phases: dict[str, Any] = {
+        "runtime": {
+            "status": "ok" if returncode == 0 else "failed",
+            "ok": returncode == 0,
+            "returncode": returncode,
+        },
+        "script": {
+            "status": "ok" if returncode == 0 else "failed",
+            "ok": returncode == 0,
+            "returncode": returncode,
+        },
+    }
+    for phase in ("checkpoint", "transfer", "restore"):
+        start_name = f"{phase}_start"
+        done_name = f"{phase}_done"
+        started = start_name in names
+        done = done_name in names
+        failed = returncode != 0 and started and not done
+        phases[phase] = {
+            "status": "failed" if failed else "ok" if done else "running" if started else "unknown",
+            "ok": False if failed else True if done else None,
+            "started": started,
+            "completed": done,
+        }
+        if started:
+            phases[phase]["started_at_ms"] = _event_time(_last_event(events, start_name))
+        if done:
+            phases[phase]["ended_at_ms"] = _event_time(_last_event(events, done_name))
+        if failed:
+            phases[phase]["returncode"] = returncode
+
+    if traffic:
+        phases["traffic"] = {
+            "status": traffic.get("status"),
+            "ok": traffic.get("ok"),
+            "mode": traffic.get("mode"),
+            "returncode": traffic.get("returncode"),
+            "failed_action": traffic.get("failed_action"),
+        }
+    if probe_readiness:
+        phases["probe_readiness"] = {
+            "status": probe_readiness.get("status"),
+            "ok": probe_readiness.get("ok"),
+            "required": probe_readiness.get("required"),
+            "returncode": probe_readiness.get("returncode"),
+        }
+    return phases
+
+
+def _status_from_structured_result(
+    returncode: int,
+    phases: dict[str, Any],
+    traffic: dict[str, Any],
+    probe_readiness: dict[str, Any],
+) -> str:
+    if returncode == 0:
+        return "ok"
+    if probe_readiness.get("required") is True and probe_readiness.get("ok") is False:
+        return "failed"
+    restore = phases.get("restore") if isinstance(phases.get("restore"), dict) else {}
+    if restore.get("ok") is True and traffic.get("ok") is False:
+        return "partial"
+    return "failed"

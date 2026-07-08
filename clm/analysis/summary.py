@@ -200,16 +200,13 @@ def _derive_run_status(status_data: Mapping[str, Any], summary_data: Mapping[str
 
     if _required_probe_failed(status_data) or _required_probe_failed(summary_data):
         return "failed"
+    if run_status == "failed" and _restore_succeeded(status_data, summary_data):
+        if _post_restore_failed(status_data, summary_data):
+            return "partial"
     if run_status in {"failed", "aborted", "running"}:
         return run_status
     if run_status == "ok":
-        if (
-            _analysis_failed(status_data, summary_data)
-            or _traffic_or_verify_failed(status_data)
-            or _traffic_or_verify_failed(summary_data)
-            or _cleanup_failed(status_data.get("cleanup"))
-            or _cleanup_failed(summary_data.get("cleanup"))
-        ):
+        if _post_restore_failed(status_data, summary_data):
             return "partial"
         return "ok"
     if run_status not in {"", "unknown"}:
@@ -227,6 +224,35 @@ def _analysis_failed(status_data: Mapping[str, Any], summary_data: Mapping[str, 
             pass
     summary_status = normalize_status(summary_data.get("status"))
     return bool(status_data) and summary_status == "failed"
+
+
+def _post_restore_failed(status_data: Mapping[str, Any], summary_data: Mapping[str, Any]) -> bool:
+    return (
+        _analysis_failed(status_data, summary_data)
+        or _traffic_or_verify_failed(status_data)
+        or _traffic_or_verify_failed(summary_data)
+        or _cleanup_failed(status_data.get("cleanup"))
+        or _cleanup_failed(summary_data.get("cleanup"))
+    )
+
+
+def _restore_succeeded(*payloads: Mapping[str, Any]) -> bool:
+    for data in payloads:
+        if not data:
+            continue
+        phases = data.get("phases")
+        if isinstance(phases, Mapping):
+            restore = phases.get("restore")
+            if _action_mapping_ok(restore):
+                return True
+        restore = data.get("restore")
+        if _action_mapping_ok(restore):
+            return True
+        for key in ("restore_done_ms_event", "restore_done", "restore_completed"):
+            value = data.get(key)
+            if value not in (None, "", False):
+                return True
+    return False
 
 
 def _required_probe_failed(data: Mapping[str, Any]) -> bool:
@@ -255,6 +281,9 @@ def _traffic_or_verify_failed(data: Mapping[str, Any]) -> bool:
         value = data.get(key)
         if _action_mapping_failed(value):
             return True
+    phases = data.get("phases")
+    if isinstance(phases, Mapping) and _action_mapping_failed(phases.get("traffic")):
+        return True
     return False
 
 
@@ -288,6 +317,18 @@ def _action_mapping_failed(value: Any) -> bool:
     return False
 
 
+def _action_mapping_ok(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        if value.get("ok") is True:
+            return True
+        status = normalize_status(value.get("status"))
+        if status == "ok":
+            return True
+        if value.get("completed") is True and value.get("failed") is not True:
+            return True
+    return bool(value is True)
+
+
 def _mapping_from_any(data: Mapping[str, Any] | Any | None) -> dict[str, Any]:
     if data is None:
         return {}
@@ -303,6 +344,9 @@ def _mapping_from_any(data: Mapping[str, Any] | Any | None) -> dict[str, Any]:
         "downtime_ms",
         "errors",
         "artifacts",
+        "phases",
+        "traffic",
+        "probe_readiness",
     ):
         if hasattr(data, name):
             out[name] = getattr(data, name)

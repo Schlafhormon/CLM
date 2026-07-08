@@ -158,10 +158,16 @@ class MigrationResult:
     errors: tuple[str, ...] = field(default_factory=tuple)
     warnings: tuple[str, ...] = field(default_factory=tuple)
     artifacts: dict[str, Any] = field(default_factory=dict)
+    phases: dict[str, Any] = field(default_factory=dict)
+    traffic: dict[str, Any] = field(default_factory=dict)
+    probe_readiness: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "errors", tuple(self.errors or ()))
         object.__setattr__(self, "warnings", tuple(self.warnings or ()))
+        object.__setattr__(self, "phases", dict(self.phases or {}))
+        object.__setattr__(self, "traffic", dict(self.traffic or {}))
+        object.__setattr__(self, "probe_readiness", dict(self.probe_readiness or {}))
 
     @property
     def ok(self) -> bool:

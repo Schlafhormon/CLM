@@ -1336,19 +1336,54 @@ def best_effort_abort_cleanup(cfg: dict) -> None:
         log(f"Abort cleanup warn (source): {exc}")
 
 
-def run_migration(cfg: dict, method: str, run_id: str, events_log: str, migrate_log: str) -> int:
-    # Run a migration.
+def run_migration_result(cfg: dict, method: str, run_id: str, events_log: str, migrate_log: str):
+    # Run a migration and keep structured backend result details.
     from clm.migration.strategies import select_strategy
 
-    result = select_strategy(cfg, requested=method).run(
+    return select_strategy(cfg, requested=method).run(
         cfg,
         run_id=run_id,
         events_log=events_log,
         migrate_log=migrate_log,
     )
+
+
+def migration_result_returncode(result) -> int:
+    # Preserve the legacy integer return-code contract.
     if "returncode" in result.artifacts:
         return int(result.artifacts["returncode"])
     return 0 if result.ok else 1
+
+
+def migration_result_status_fields(result) -> dict:
+    # Extract JSON-safe structured migration fields for status.json.
+    fields = {
+        "migration_result_status": result.status,
+    }
+    if result.phases:
+        fields["phases"] = result.phases
+    if result.traffic:
+        fields["traffic"] = result.traffic
+    if result.probe_readiness:
+        fields["probe_readiness"] = result.probe_readiness
+    if result.errors:
+        fields["migration_errors"] = list(result.errors)
+    if result.warnings:
+        fields["migration_warnings"] = list(result.warnings)
+    if result.artifacts:
+        safe_artifacts = {
+            str(key): value
+            for key, value in result.artifacts.items()
+            if isinstance(value, (str, int, float, bool)) or value is None
+        }
+        if safe_artifacts:
+            fields["migration_artifacts"] = safe_artifacts
+    return fields
+
+
+def run_migration(cfg: dict, method: str, run_id: str, events_log: str, migrate_log: str) -> int:
+    # Run a migration.
+    return migration_result_returncode(run_migration_result(cfg, method, run_id, events_log, migrate_log))
 
 
 def validate_run_capabilities(cfg: dict, method: str):
@@ -1961,7 +1996,9 @@ def run_cli(
                 if not no_migrate:
                     progress.update(phase="migrate", run_index=i, done=i - 1, failed=failed_runs)
                     log(f"Run {run_id}: migrate {method}")
-                    rc_migrate = run_migration(cfg, method, run_id, events_log, migrate_log)
+                    migration_result = run_migration_result(cfg, method, run_id, events_log, migrate_log)
+                    status.update(migration_result_status_fields(migration_result))
+                    rc_migrate = migration_result_returncode(migration_result)
                     if rc_migrate != 0:
                         raise RuntimeError(f"migration rc={rc_migrate}")
                 else:

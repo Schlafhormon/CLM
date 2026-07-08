@@ -92,5 +92,7 @@ class LegacyAdapterStrategy(MigrationStrategy):
                 f"{self.name} used the legacy {self.legacy_method} migration adapter.",
             ),
             artifacts=artifacts,
+            phases=result.phases,
+            traffic=result.traffic,
+            probe_readiness=result.probe_readiness,
         )
-

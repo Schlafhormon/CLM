@@ -29,6 +29,7 @@ class CoreModelsTests(unittest.TestCase):
         ok_result = MigrationResult(migration_id="m1", status="ok", warnings=["slow cutover"])
         self.assertTrue(ok_result.ok)
         self.assertEqual(ok_result.warnings, ("slow cutover",))
+        self.assertEqual(ok_result.phases, {})
 
     def test_preflight_result_reports_blockers(self):
         clean = PreflightResult(checks=({"name": "criu", "ok": True},))

@@ -19,25 +19,27 @@ CLM uses these operator-facing states:
 
 `clm.analysis.summary.summarize_run_dir()` derives the same high-level view from
 `status.json` and `summary.json`. It keeps `status.json` as the primary runtime
-status and marks post-runtime failures as `partial` where the existing
-artifacts expose enough information.
+status, but can mark a failed legacy return code as `partial` when structured
+artifacts prove restore succeeded and a post-restore action failed.
 
 ## Decision Order
 
 Operators and automation should use this order:
 
-1. If `status.json.status` is `failed`, `aborted`, or `running`, that is the
-   primary run state.
+1. If `status.json.status` is `aborted` or `running`, that is the primary run
+   state.
 2. If any required app/readiness probe is fatal, the run is `failed`, even when
    restore returned successfully.
-3. If runtime restore failed, the run is `failed`.
-4. If restore succeeded but traffic switch or traffic verify failed, the run is
+3. If `status.json.status` is `failed` and there is no structured evidence that
+   restore completed before a post-restore failure, the run is `failed`.
+4. If runtime restore failed, the run is `failed`.
+5. If restore succeeded but traffic switch or traffic verify failed, the run is
    `partial`.
-5. If restore and required probes succeeded but monitoring or analysis failed,
+6. If restore and required probes succeeded but monitoring or analysis failed,
    the run is `partial`.
-6. If restore, required probes, and traffic succeeded but cleanup failed, the
+7. If restore, required probes, and traffic succeeded but cleanup failed, the
    run is `partial`.
-7. Only when none of the failure or partial conditions apply is the run `ok`.
+8. Only when none of the failure or partial conditions apply is the run `ok`.
 
 ## Required Cases
 
@@ -65,17 +67,24 @@ switch or verify client-facing traffic, classify the operator outcome as
 
 Relevant fields:
 
+- `status.json.phases.restore` with `ok: true`, `status: ok`, or
+  `completed: true` confirms that destination restore completed.
+- `status.json.traffic` or `status.json.phases.traffic` with `ok: false`,
+  `status: failed`, `failed_action: switch` or `failed_action: verify`, or a
+  non-zero action `returncode` identifies the post-restore traffic failure.
 - `summary.json.traffic`, `summary.json.traffic_verify`, or equivalent backend
   action result with `ok: false`, failed `status`, or non-zero `returncode`.
 - Event evidence such as restore completion followed by traffic failure
   markers, when available.
-- `MigrationResult.artifacts` fields such as `returncode`, `events_log`, and
+- `MigrationResult.phases`, `MigrationResult.traffic`, and
+  `MigrationResult.artifacts` fields such as `returncode`, `events_log`, and
   `migrate_log` for script-level diagnosis.
 
 Current legacy runc scripts are still VIP-oriented. Some traffic failures may
 surface only as a non-zero migration return code, in which case
-`status.json.status` remains `failed` unless a future backend records restore
-success separately from traffic failure.
+`status.json.status` may remain `failed`; `clm.analysis.summary` reclassifies
+the operator outcome as `partial` when the artifacts show restore success plus
+traffic or verify failure.
 
 ### Required Probe Failed
 
@@ -86,6 +95,7 @@ Relevant fields:
 
 - App readiness payloads such as `app_readiness`, `readiness`, or
   `required_probe`.
+- `status.json.probe_readiness` or `status.json.phases.probe_readiness`.
 - `fatal: true`.
 - `required: true` with `ready: false`.
 - Non-empty `failed_required` or `missing_required`.
@@ -136,6 +146,8 @@ Use these fields first:
   monitor-only control runs.
 - `analyze_rc`: analysis result code; non-zero after runtime `ok` means
   `partial`.
+- `phases`, `traffic`, `probe_readiness`: structured backend result details
+  copied from `MigrationResult` when the runtime adapter can provide them.
 - `cleanup`: cleanup outcome; failed nested actions after runtime `ok` mean
   `partial`.
 - `no_cleanup`: explicit cleanup skip; not a failure by itself.
@@ -168,6 +180,14 @@ Runtime and strategy backends should populate:
 - `downtime_ms`: direct downtime when known by the backend.
 - `errors`: backend or strategy errors.
 - `warnings`: non-fatal concerns such as legacy adapter use.
+- `phases`: structured phase outcomes keyed by phase name. Current common keys
+  are `runtime`, `script`, `checkpoint`, `transfer`, `restore`,
+  `probe_readiness`, and `traffic`.
+- `traffic`: structured traffic backend outcome with `mode`, `status`, `ok`,
+  `returncode`, optional `failed_action`, and per-action details under
+  `actions.prepare`, `actions.switch`, and `actions.verify`.
+- `probe_readiness`: structured required readiness/probe result where the
+  runtime has such a gate.
 - `artifacts`: paths and diagnostic data, especially `events_log`,
   `migrate_log`, `returncode`, selected strategy/backend metadata, and transfer
   mode details.
@@ -189,8 +209,11 @@ script environment, and the Bash `TRAFFIC_MODE` branches for these modes must
 not run VIP address, conntrack, or arping commands. The scripts still contain
 VIP helper functions for the `vip` compatibility branch.
 
-Until restore and traffic phases are separated into structured backend results,
-some failures that should ultimately be `partial` may still appear as
-`failed`. In that case, inspect `events/events.ndjson` and the migration log to
-determine whether destination restore completed before traffic or verification
-failed.
+The runc legacy adapter now records `returncode`, traffic mode, restore
+markers, traffic action markers, and postcopy destination readiness markers
+when they are present in the events log. The Bash scripts still abort through
+shared shell error handling and do not always emit an explicit
+`traffic_*_failed` or `restore_failed` event. When only a non-zero return code
+is available and no restore/traffic markers were emitted, CLM must keep the run
+as `failed`. Inspect `events/events.ndjson` and the migration log to determine
+whether destination restore completed before traffic or verification failed.

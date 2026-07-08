@@ -65,6 +65,57 @@ class CliLoadProfilesTests(unittest.TestCase):
         self.assertIn("--latency", body)
         self.assertIn("http://192.168.13.50:8080/ready", body)
 
+    def test_monitor_cmd_without_load_uses_core_targets_only(self):
+        cfg = copy.deepcopy(cli.DEFAULTS)
+
+        cmd = cli.monitor_cmd(cfg, "run-1", "/tmp/mon", load_modes=None)
+        joined = " ".join(cmd)
+
+        self.assertIn("src=http://192.168.13.10:8080/health", joined)
+        self.assertIn("dst=http://192.168.13.15:8080/health", joined)
+        self.assertIn("vip=http://192.168.13.50:8080/health", joined)
+        self.assertNotIn("--info-target", cmd)
+        self.assertNotIn("--counter-target", cmd)
+        self.assertNotIn("--stream-target", cmd)
+        self.assertNotIn("--download-target", cmd)
+        self.assertNotIn("--upload-target", cmd)
+
+    def test_monitor_cmd_with_legacy_load_enables_legacy_targets(self):
+        cfg = copy.deepcopy(cli.DEFAULTS)
+
+        cmd = cli.monitor_cmd(cfg, "run-1", "/tmp/mon", load_modes=["download", "stream"])
+
+        self.assertIn("--info-target", cmd)
+        self.assertIn("--counter-target", cmd)
+        self.assertIn("--stream-target", cmd)
+        self.assertIn("--download-target", cmd)
+
+    def test_monitor_cmd_adds_explicit_probe_targets(self):
+        cfg = copy.deepcopy(cli.DEFAULTS)
+        cfg["traffic"] = {"mode": "external"}
+        cfg["probes"] = [
+            {
+                "name": "service-health",
+                "type": "http",
+                "target": "service",
+                "url": "http://service.example/health",
+            },
+            {
+                "name": "vip-observer",
+                "type": "tcp",
+                "target": "vip",
+                "host": "192.168.13.50",
+                "port": 8080,
+            },
+        ]
+
+        cmd = cli.monitor_cmd(cfg, "run-1", "/tmp/mon", load_modes=None)
+        joined = " ".join(cmd)
+
+        self.assertIn("service=http://service.example/health", joined)
+        self.assertIn("vip=192.168.13.50:8080", joined)
+        self.assertNotIn("vip=http://192.168.13.50:8080/health", joined)
+
 
 if __name__ == "__main__":
     unittest.main()

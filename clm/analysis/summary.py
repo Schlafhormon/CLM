@@ -24,12 +24,12 @@ _DURATION_KEYS = (
 )
 
 _DOWNTIME_KEYS = (
-    "vip_http_client_visible_total_down_ms",
-    "vip_http_downtime_ms",
-    "vip_l4_downtime_ms",
     "http_downtime_ms",
     "l4_downtime_ms",
     "downtime_ms",
+    "vip_http_client_visible_total_down_ms",
+    "vip_http_downtime_ms",
+    "vip_l4_downtime_ms",
 )
 
 _ARTIFACT_CANDIDATES = {

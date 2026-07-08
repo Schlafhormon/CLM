@@ -10,6 +10,11 @@ configured monitoring/probes without starting synthetic workload generators.
 Production-like traffic should normally be supplied outside CLM, or through
 future example/integration-test harnesses.
 
+No-load runs also keep the runtime monitor on the core target set: source and
+destination health/reachability plus explicit `probes:` entries. They do not
+configure download, upload, stream, or `wrk` load goals, and they do not require
+VIP metrics unless `traffic.mode: vip` or an explicit VIP probe is configured.
+
 The current Flask workload lives under `workload/flask_app/`. The intended
 low-risk transition is to keep that path working while documenting
 `examples/flask-workload/` as the future home for this example.
@@ -48,6 +53,13 @@ The generic `wrk` profile remains available for exploratory runs. The paper
 scenario filter uses `idle`, `cpu`, `wrk1`, `wrk2`, `wrk3`, `download`,
 `upload`, and `stream`. These defaults are compatibility defaults for research
 runs, not product defaults for the future core.
+
+When any legacy `--load` profile is active, CLM keeps the old lab monitor
+behavior available for compatibility. That can include info/counter/stream
+targets and the transfer target needed by the requested profile. Without
+`--load`, those research targets stay disabled unless the operator explicitly
+sets `monitor.enable_legacy_targets: true` or
+`monitor.legacy_research_targets: true`.
 
 ## Download
 

@@ -213,6 +213,73 @@ class RunMigrationTests(unittest.TestCase):
         self.assertIn("traffic_switch_done", cmd)
         self.assertNotIn("vip_cutover_start", cmd)
 
+    def test_run_cli_without_load_does_not_start_synthetic_load(self):
+        cfg = deepcopy(cli.DEFAULTS)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg["paths"]["runs_root"] = str(Path(tmp) / "runs")
+            cfg["paths"]["logs_root"] = str(Path(tmp) / "logs")
+
+            with patch("clm.cli.cleanup_dest"), \
+                 patch("clm.cli.reset_source"), \
+                 patch("clm.cli.collect_clock_offsets", return_value={}), \
+                 patch("clm.cli.start_monitor", return_value=(None, None)) as start_monitor, \
+                 patch("clm.cli.start_load") as start_load, \
+                 patch("clm.cli.analyze_run", return_value=0), \
+                 patch("clm.cli.time.sleep", return_value=None), \
+                 patch("clm.cli.create_legacy_run_link", return_value=None), \
+                 patch("clm.cli.cleanup_run_checkpoint_artifacts", side_effect=AssertionError("cleanup should be skipped")):
+                rc = cli.run_cli(
+                    cfg,
+                    method="precopy",
+                    repeats=1,
+                    load_flags=None,
+                    no_monitor=False,
+                    no_migrate=True,
+                    no_cleanup=True,
+                    auto_analyse=False,
+                    env_path="config/env.yaml",
+                    cli_argv=["run", "--method", "precopy", "--no-migrate"],
+                )
+
+        self.assertEqual(rc, 0)
+        start_load.assert_not_called()
+        self.assertEqual(start_monitor.call_args.kwargs["load_modes"], [])
+
+    def test_run_cli_with_legacy_load_starts_synthetic_load(self):
+        cfg = deepcopy(cli.DEFAULTS)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg["paths"]["runs_root"] = str(Path(tmp) / "runs")
+            cfg["paths"]["logs_root"] = str(Path(tmp) / "logs")
+
+            with patch("clm.cli.cleanup_dest"), \
+                 patch("clm.cli.reset_source"), \
+                 patch("clm.cli.collect_clock_offsets", return_value={}), \
+                 patch("clm.cli.start_monitor", return_value=(None, None)) as start_monitor, \
+                 patch("clm.cli.start_load", return_value=[]) as start_load, \
+                 patch("clm.cli.analyze_run", return_value=0), \
+                 patch("clm.cli.time.sleep", return_value=None), \
+                 patch("clm.cli.create_legacy_run_link", return_value=None), \
+                 patch("clm.cli.cleanup_run_checkpoint_artifacts", side_effect=AssertionError("cleanup should be skipped")):
+                rc = cli.run_cli(
+                    cfg,
+                    method="precopy",
+                    repeats=1,
+                    load_flags=["cpu"],
+                    no_monitor=False,
+                    no_migrate=True,
+                    no_cleanup=True,
+                    auto_analyse=False,
+                    env_path="config/env.yaml",
+                    cli_argv=["run", "--method", "precopy", "--load", "cpu", "--no-migrate"],
+                )
+
+        self.assertEqual(rc, 0)
+        start_load.assert_called_once()
+        self.assertEqual(start_load.call_args.args[2], ["cpu"])
+        self.assertEqual(start_monitor.call_args.kwargs["load_modes"], ["cpu"])
+
     def test_vip_run_baseline_keeps_legacy_vip_cleanup(self):
         cfg = deepcopy(cli.DEFAULTS)
 
@@ -383,6 +450,35 @@ class RunMigrationTests(unittest.TestCase):
             self.assertEqual(summary["migration_params"]["precopy_pre_dump_rounds"], 1)
             self.assertEqual(summary["migration_params"]["precopy_tcp_established"], 0)
             self.assertEqual(summary["vip_http_downtime_ms"], 123.0)
+
+    def test_analyze_run_writes_core_status_and_downtime_without_vip_metrics(self):
+        cfg = deepcopy(cli.DEFAULTS)
+        cfg["repo_path"] = "~/CLM"
+        cfg["traffic"] = {"mode": "external"}
+
+        analyze_stdout = json.dumps({"http_downtime_ms": 44.0, "l4_downtime_ms": 55.0})
+
+        def fake_run_local(cmd, **kwargs):
+            self.assertIn("--analyze", cmd)
+            return SimpleNamespace(returncode=0, stdout=analyze_stdout, stderr="")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "runs" / "0003"
+            (run_dir / "monitor").mkdir(parents=True, exist_ok=True)
+            events_log = str(run_dir / "events" / "events.ndjson")
+            base_out = str(run_dir / "monitor" / "mon")
+
+            with patch("clm.cli.run_local", side_effect=fake_run_local):
+                rc = cli.analyze_run(cfg, base_out, events_log, str(run_dir))
+
+            self.assertEqual(rc, 0)
+            summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["status"], "ok")
+            self.assertEqual(summary["core_status"], "ok")
+            self.assertEqual(summary["core_downtime_ms"], 44.0)
+            self.assertEqual(summary["core_summary"]["downtime_ms"], 44.0)
+            self.assertEqual(summary["migration_params"]["traffic_mode"], "external")
+            self.assertNotIn("vip_http_downtime_ms", summary)
 
     def test_analyze_run_uses_recommended_postcopy_readiness_defaults_in_summary(self):
         cfg = deepcopy(cli.DEFAULTS)

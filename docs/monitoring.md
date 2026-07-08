@@ -20,6 +20,18 @@ Required app readiness is fatal when a required probe fails or has no result.
 Optional app readiness is reported as a warning and must not by itself turn a
 successful restore or migration into a failed migration.
 
+`clm run` starts core monitoring when monitoring is enabled. Without `--load`,
+the generated runtime monitor command contains source/destination HTTP and TCP
+health targets plus any explicit HTTP/TCP entries from `probes:`. VIP monitor
+targets are added only when the effective traffic backend is `vip`, or when an
+operator explicitly configures a VIP probe. External and command traffic modes
+therefore do not imply VIP metrics.
+
+The core summary fields are `status`, `core_status`, `core_downtime_ms`,
+`core_downtime`, timeline/event markers, and the generic `http_downtime_ms` /
+`l4_downtime_ms` values when available. Legacy VIP metrics may still be present
+for compatibility, but they are no longer required for a normal run summary.
+
 The code boundary for this model is `clm/monitoring/`:
 
 - `probes.py` defines `ProbeSpec` for HTTP, TCP and command probes and validates
@@ -46,6 +58,13 @@ not define the core monitoring model:
 These features are useful for experiments and troubleshooting. They should be
 treated as optional analysis or legacy lab features, not as required CLM
 operator functionality.
+
+`clm run --load ...` keeps the legacy research monitor behavior compatible:
+synthetic load profiles can add stream/download/upload monitor targets and
+legacy info/counter targets. For a no-load migration, those targets are not
+configured or started by default. Operators that need the old lab monitor
+without a load profile can opt in with `monitor.enable_legacy_targets: true` or
+`monitor.legacy_research_targets: true`.
 
 ## Compatibility
 

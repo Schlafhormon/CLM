@@ -33,6 +33,20 @@ class CoreSummaryTests(unittest.TestCase):
         self.assertEqual(summary.artifact_paths["summary"], "/runs/1/summary.json")
         self.assertEqual(summary.as_dict()["schema"], "clm.analysis.summary.v1")
 
+    def test_build_core_summary_prefers_core_downtime_over_vip_metrics(self):
+        summary = build_core_summary(
+            {
+                "status": "ok",
+                "http_downtime_ms": 42,
+                "l4_downtime_ms": 50,
+                "vip_http_client_visible_total_down_ms": 125,
+                "vip_l4_downtime_ms": 80,
+            }
+        )
+
+        self.assertAlmostEqual(summary.downtime_ms, 42.0)
+        self.assertEqual(summary.downtime["vip_http_client_visible_total_down_ms"], 125.0)
+
     def test_summarize_run_dir_merges_status_summary_and_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp)

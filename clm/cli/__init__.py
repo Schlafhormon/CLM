@@ -763,9 +763,12 @@ def monitor_cmd(cfg: dict, run_id: str, base_out: str, load_modes=None, events_l
     )
 
     precision_mode = bool(mon.get("precision_mode", False))
-    enable_info = bool(mon.get("enable_info_targets", not precision_mode))
-    enable_counter = bool(mon.get("enable_counter_targets", not precision_mode))
-    enable_stream = bool(mon.get("enable_stream_targets", not precision_mode))
+    legacy_monitoring_enabled = bool(active_loads) or bool(
+        mon.get("enable_legacy_targets", False) or mon.get("legacy_research_targets", False)
+    )
+    enable_info = legacy_monitoring_enabled and bool(mon.get("enable_info_targets", not precision_mode))
+    enable_counter = legacy_monitoring_enabled and bool(mon.get("enable_counter_targets", not precision_mode))
+    enable_stream = legacy_monitoring_enabled and bool(mon.get("enable_stream_targets", not precision_mode))
 
     cmd = [
         sys.executable,
@@ -783,6 +786,14 @@ def monitor_cmd(cfg: dict, run_id: str, base_out: str, load_modes=None, events_l
         "--rotate-size-mb", str(mon.get("rotate_size_mb", 50)),
         "--tag", f"run_id={run_id}",
     ]
+    _append_probe_monitor_targets(
+        cmd,
+        cfg,
+        http_interval_ms=http_interval_ms,
+        http_timeout_ms=http_timeout_ms,
+        l4_interval_ms=l4_interval_ms,
+        l4_timeout_ms=l4_timeout_ms,
+    )
     if use_vip and vip_ip:
         cmd += [
             "--http-target", f"vip=http://{vip_ip}:{port}/health",
@@ -865,6 +876,61 @@ def monitor_cmd(cfg: dict, run_id: str, base_out: str, load_modes=None, events_l
         for target_name, base in _load_target_urls(cfg, st.get("target", "vip")):
             cmd += ["--stream-target", f"load_stream_{target_name}={base}/stream"]
     return cmd
+
+
+def _append_probe_monitor_targets(
+    cmd: list,
+    cfg: dict,
+    *,
+    http_interval_ms: int,
+    http_timeout_ms: int,
+    l4_interval_ms: int,
+    l4_timeout_ms: int,
+) -> None:
+    # Add explicitly configured core probes to the legacy runtime monitor.
+    from clm.monitoring import parse_probe_specs
+
+    try:
+        probes = parse_probe_specs(cfg.get("probes"))
+    except Exception as exc:
+        die(f"ungueltige probes-Konfiguration: {exc}")
+
+    http_seen = _monitor_arg_values(cmd, "--http-target")
+    l4_seen = _monitor_arg_values(cmd, "--l4-target")
+    for probe in probes:
+        target_name = _probe_monitor_target_name(probe)
+        if probe.type == "http":
+            value = f"{target_name}={probe.url}"
+            if value not in http_seen:
+                cmd += ["--http-target", value]
+                http_seen.add(value)
+            if probe.interval_ms and int(probe.interval_ms) != int(http_interval_ms):
+                cmd += ["--tag", f"probe.{target_name}.interval_ms={probe.interval_ms}"]
+            if probe.timeout_ms and int(probe.timeout_ms) != int(http_timeout_ms):
+                cmd += ["--tag", f"probe.{target_name}.timeout_ms={probe.timeout_ms}"]
+        elif probe.type == "tcp":
+            value = f"{target_name}={probe.host}:{probe.port}"
+            if value not in l4_seen:
+                cmd += ["--l4-target", value]
+                l4_seen.add(value)
+            if probe.interval_ms and int(probe.interval_ms) != int(l4_interval_ms):
+                cmd += ["--tag", f"probe.{target_name}.interval_ms={probe.interval_ms}"]
+            if probe.timeout_ms and int(probe.timeout_ms) != int(l4_timeout_ms):
+                cmd += ["--tag", f"probe.{target_name}.timeout_ms={probe.timeout_ms}"]
+
+
+def _monitor_arg_values(cmd: list, flag: str) -> set:
+    values = set()
+    for idx, item in enumerate(cmd[:-1]):
+        if item == flag:
+            values.add(str(cmd[idx + 1]))
+    return values
+
+
+def _probe_monitor_target_name(probe) -> str:
+    raw = probe.target or probe.name or probe.type
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(raw).strip())
+    return name or str(probe.type)
 
 
 def start_monitor(
@@ -1658,6 +1724,7 @@ def analyze_run(cfg: dict, base_out: str, events_log: str, run_dir: str):
         vip_conntrack_clear_src = bool(vip_conntrack_clear_src)
 
     summary.update({
+        "status": summary.get("status") or ("ok" if res.returncode == 0 else "error"),
         "run_id": Path(run_dir).name,
         "analyze_rc": res.returncode,
         "events": events_log,
@@ -1699,6 +1766,14 @@ def analyze_run(cfg: dict, base_out: str, events_log: str, run_dir: str):
             "postcopy_warmup_max_duration_ms": _int_with_default(post.get("warmup_max_duration_ms", 400), 400),
         },
     })
+    from clm.analysis.summary import build_core_summary
+
+    core_summary = build_core_summary(summary, source=Path(run_dir).name)
+    summary["core_status"] = core_summary.status
+    summary["core_downtime_ms"] = core_summary.downtime_ms
+    summary["core_downtime"] = core_summary.downtime
+    summary["core_summary"] = core_summary.as_dict()
+    summary.setdefault("downtime_ms", core_summary.downtime_ms)
     write_json(str(Path(run_dir) / "summary.json"), summary)
     write_text(str(Path(run_dir) / "monitor" / "analyze.log"), out)
     return res.returncode

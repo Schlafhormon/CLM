@@ -16,6 +16,8 @@ This directory contains operational documentation for the standalone CLM tool.
   repeatable measurements.
 - [metrics_reference.md](metrics_reference.md): generated metrics and their
   semantics.
+- [migration_success.md](migration_success.md): operator-facing contract for
+  successful, partial, and failed migrations.
 - [downtime_segments.md](downtime_segments.md): downtime segment extraction and
   timeline breakdowns.
 

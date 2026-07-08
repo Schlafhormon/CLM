@@ -116,10 +116,17 @@ def summarize_run_dir(run_dir: str | Path) -> CoreSummary:
     payload: dict[str, Any] = {}
     status_path = _first_existing(root, _ARTIFACT_CANDIDATES["status"])
     summary_path = _first_existing(root, _ARTIFACT_CANDIDATES["summary"])
+    status_payload: dict[str, Any] = {}
+    summary_payload: dict[str, Any] = {}
     if status_path is not None:
-        payload.update(_read_json_object(status_path))
+        status_payload = _read_json_object(status_path)
+        payload.update(status_payload)
     if summary_path is not None:
-        payload.update(_read_json_object(summary_path))
+        summary_payload = _read_json_object(summary_path)
+        payload.update(summary_payload)
+    derived_status = _derive_run_status(status_payload, summary_payload)
+    if derived_status is not None:
+        payload["status"] = derived_status
     return build_core_summary(payload, run_dir=root, source=str(root))
 
 
@@ -127,6 +134,8 @@ def normalize_status(value: Any) -> str:
     text = str(value or "").strip().lower()
     if text in {"ok", "success", "succeeded", "completed", "complete"}:
         return "ok"
+    if text in {"partial", "partially_successful", "partial_success", "degraded", "warning", "warnings"}:
+        return "partial"
     if text in {"fail", "failed", "failure", "error", "errored"}:
         return "failed"
     if text in {"running", "in_progress", "started"}:
@@ -180,6 +189,103 @@ def extract_errors(data: Mapping[str, Any]) -> tuple[str, ...]:
     elif value:
         out.append(str(value))
     return tuple(dict.fromkeys(out))
+
+
+def _derive_run_status(status_data: Mapping[str, Any], summary_data: Mapping[str, Any]) -> Optional[str]:
+    if not status_data and not summary_data:
+        return None
+
+    run_status = normalize_status(status_data.get("status")) if status_data else "unknown"
+    summary_status = normalize_status(summary_data.get("status")) if summary_data else "unknown"
+
+    if _required_probe_failed(status_data) or _required_probe_failed(summary_data):
+        return "failed"
+    if run_status in {"failed", "aborted", "running"}:
+        return run_status
+    if run_status == "ok":
+        if (
+            _analysis_failed(status_data, summary_data)
+            or _traffic_or_verify_failed(status_data)
+            or _traffic_or_verify_failed(summary_data)
+            or _cleanup_failed(status_data.get("cleanup"))
+            or _cleanup_failed(summary_data.get("cleanup"))
+        ):
+            return "partial"
+        return "ok"
+    if run_status not in {"", "unknown"}:
+        return run_status
+    return summary_status if summary_status not in {"", "unknown"} else None
+
+
+def _analysis_failed(status_data: Mapping[str, Any], summary_data: Mapping[str, Any]) -> bool:
+    for data in (status_data, summary_data):
+        rc = data.get("analyze_rc")
+        try:
+            if rc is not None and int(rc) != 0:
+                return True
+        except (TypeError, ValueError):
+            pass
+    summary_status = normalize_status(summary_data.get("status"))
+    return bool(status_data) and summary_status == "failed"
+
+
+def _required_probe_failed(data: Mapping[str, Any]) -> bool:
+    for key in ("app_readiness", "readiness", "required_probe", "required_probes"):
+        value = data.get(key)
+        if _readiness_mapping_failed(value):
+            return True
+    return False
+
+
+def _readiness_mapping_failed(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        if value.get("fatal") is True:
+            return True
+        if value.get("required") is True and value.get("ready") is False:
+            return True
+        if value.get("failed_required") or value.get("missing_required"):
+            return True
+    if isinstance(value, (list, tuple)):
+        return any(_readiness_mapping_failed(item) for item in value)
+    return False
+
+
+def _traffic_or_verify_failed(data: Mapping[str, Any]) -> bool:
+    for key in ("traffic", "traffic_result", "traffic_verify", "verify"):
+        value = data.get(key)
+        if _action_mapping_failed(value):
+            return True
+    return False
+
+
+def _cleanup_failed(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        if value.get("error"):
+            return True
+        if value.get("attempted") is True and value.get("ok") is False:
+            return True
+        return any(_cleanup_failed(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_cleanup_failed(item) for item in value)
+    return False
+
+
+def _action_mapping_failed(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        if value.get("ok") is False:
+            return True
+        status = normalize_status(value.get("status"))
+        if status == "failed":
+            return True
+        try:
+            rc = value.get("returncode")
+            if rc is not None and int(rc) != 0:
+                return True
+        except (TypeError, ValueError):
+            pass
+    if isinstance(value, (list, tuple)):
+        return any(_action_mapping_failed(item) for item in value)
+    return False
 
 
 def _mapping_from_any(data: Mapping[str, Any] | Any | None) -> dict[str, Any]:

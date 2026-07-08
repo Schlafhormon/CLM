@@ -213,6 +213,11 @@ the tool. The target direction is a simpler operator-facing analysis layer:
 summaries, downtime timelines, warnings, and links to raw artifacts when deeper
 debugging is needed.
 
+For the operator-facing success contract, including how to distinguish
+successful, partially successful, and failed migrations from `status.json`,
+`summary.json`, and `MigrationResult`, see
+[docs/migration_success.md](docs/migration_success.md).
+
 Analyze the newest batch:
 
 ```bash
@@ -272,7 +277,7 @@ Near-term hardening work should focus on:
 
 Start with [docs/README.md](docs/README.md). The docs describe pre-copy and
 post-copy workflows, shared storage, measurement hygiene, workload scenarios,
-downtime segments, and metric semantics.
+downtime segments, metric semantics, and the migration success contract.
 
 ## License
 

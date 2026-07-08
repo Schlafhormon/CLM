@@ -628,6 +628,7 @@ Verifikation:
 Du bist im CLM Repo. Fuehre ein strenges Architektur- und Code-Review der aktuellen Aenderungen durch.
 
 Ziel: Pruefe, ob die Umsetzung zum Ziel passt, CLM zu einem vollwertigen CRIU-basierten Container-Live-Migrationstool weiterzuentwickeln.
+Lies: docs\implementation_plan.md
 
 Pruefe besonders:
 - Ist `clm/cli.py` kleiner geworden oder gibt es einen realistischen Weg dahin?

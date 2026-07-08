@@ -139,7 +139,8 @@ Edit `config/env.yaml` for your lab:
 - `container`: runc container name, image, bundle path, and Gunicorn sizing
 - `migration`, `precopy`, `postcopy`: method-specific runtime settings
 - `monitor`: probe intervals, timeouts, burst behavior, and target families
-- `load`: legacy research workload profiles
+- `load`: legacy/example research workload profiles; omit `--load` for normal
+  migrations
 
 ## Preflight
 
@@ -164,13 +165,17 @@ Run one pre-copy migration:
 clm run --env config/env.yaml --method precopy --repeats 1
 ```
 
+This is the recommended path for ordinary migrations: no `--load` flag, no
+synthetic workload generator, and only the configured migration plus monitoring
+path.
+
 Run a post-copy batch:
 
 ```bash
 clm run --env config/env.yaml --method postcopy --repeats 10
 ```
 
-Run selected load profiles:
+Run selected legacy load profiles:
 
 ```bash
 clm run --env config/env.yaml --method precopy --load idle --repeats 5
@@ -180,8 +185,10 @@ clm run --env config/env.yaml --method postcopy --load stream --load upload
 
 Supported legacy profiles are `idle`, `cpu`, `wrk1`, `wrk2`, `wrk3`,
 `download`, `upload`, and `stream`. `heavy` is kept as a compatibility alias
-for `cpu`. These profiles came from the research setup and are not intended to
-remain part of the core orchestrator.
+for `cpu`. These profiles came from the research setup, depend on the Flask
+example workload in `workload/flask_app/`, and are not intended to remain part
+of the core orchestrator. New operator workflows should use app probes and
+external traffic/load generation instead of CLM-managed synthetic profiles.
 
 Useful run switches:
 

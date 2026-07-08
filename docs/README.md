@@ -10,8 +10,8 @@ This directory contains operational documentation for the standalone CLM tool.
   post-copy migration workflow.
 - [shared_storage_nfs.md](shared_storage_nfs.md): expected shared storage
   layout for CRIU images, run artifacts, and logs.
-- [workload_scenarios.md](workload_scenarios.md): Flask workload endpoints and
-  load profile behavior.
+- [workload_scenarios.md](workload_scenarios.md): legacy/example Flask
+  workload endpoints and synthetic load profile behavior.
 - [measurement_hygiene.md](measurement_hygiene.md): practical rules for
   repeatable measurements.
 - [metrics_reference.md](metrics_reference.md): generated metrics and their

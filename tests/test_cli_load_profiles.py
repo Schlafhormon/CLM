@@ -9,6 +9,16 @@ import clm.cli as cli
 
 
 class CliLoadProfilesTests(unittest.TestCase):
+    def test_parse_load_modes_defaults_to_no_synthetic_load(self):
+        self.assertEqual(cli.parse_load_modes(None), [])
+        self.assertEqual(cli.parse_load_modes(["idle"]), [])
+
+    def test_legacy_synthetic_load_profile_list_is_explicit(self):
+        self.assertEqual(
+            cli.LEGACY_SYNTHETIC_LOAD_PROFILES,
+            ("cpu", "wrk", "wrk1", "wrk2", "wrk3", "download", "upload", "stream"),
+        )
+
     def test_parse_load_modes_accepts_named_wrk_profiles(self):
         self.assertEqual(cli.parse_load_modes(["wrk1"]), ["wrk1"])
         self.assertEqual(cli.parse_load_modes(["cpu,wrk2,download,wrk3"]), ["cpu", "wrk2", "download", "wrk3"])

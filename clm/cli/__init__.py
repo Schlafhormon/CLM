@@ -210,6 +210,7 @@ _TS_PREFIX_RE = re.compile(
     r"^\[\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\]"
 )
 _GIT_HEAD_RE = re.compile(r"^[0-9a-f]{40}$")
+LEGACY_SYNTHETIC_LOAD_PROFILES = ("cpu", "wrk", "wrk1", "wrk2", "wrk3", "download", "upload", "stream")
 
 
 def die(msg: str, code: int = 1) -> None:
@@ -903,7 +904,7 @@ def parse_load_modes(load_flags) -> list:
             continue
         if name == "heavy":
             name = "cpu"
-        if name not in ("cpu", "wrk", "wrk1", "wrk2", "wrk3", "download", "upload", "stream"):
+        if name not in LEGACY_SYNTHETIC_LOAD_PROFILES:
             die(f"ungueltiges --load Profil: {name}")
         if name not in active:
             active.append(name)

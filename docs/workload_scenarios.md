@@ -1,4 +1,18 @@
-# Workload Scenarios
+# Legacy Workload Scenarios
+
+The Flask workload and the synthetic `clm run --load ...` profiles are
+legacy/example assets from the research setup. They remain documented and
+compatible for repeatable experiments, but they are not the recommended core
+migration path.
+
+For normal CLM migrations, omit `--load`. CLM will then run the migration and
+configured monitoring/probes without starting synthetic workload generators.
+Production-like traffic should normally be supplied outside CLM, or through
+future example/integration-test harnesses.
+
+The current Flask workload lives under `workload/flask_app/`. The intended
+low-risk transition is to keep that path working while documenting
+`examples/flask-workload/` as the future home for this example.
 
 The Flask workload exposes endpoints used to stress the migrated container
 during pre-copy and post-copy experiments. The goal is to exercise CPU, network
@@ -18,7 +32,7 @@ measurement reproducibility.
 
 `heavy` is retained as a historical alias for `cpu`.
 
-## Current `clm` Load Defaults
+## Current Legacy `clm` Load Defaults
 
 | Scenario | Current default parameters |
 |---|---|
@@ -32,7 +46,8 @@ measurement reproducibility.
 
 The generic `wrk` profile remains available for exploratory runs. The paper
 scenario filter uses `idle`, `cpu`, `wrk1`, `wrk2`, `wrk3`, `download`,
-`upload`, and `stream`.
+`upload`, and `stream`. These defaults are compatibility defaults for research
+runs, not product defaults for the future core.
 
 ## Download
 
@@ -145,9 +160,9 @@ The paper campaign uses this as the `cpu` scenario.
 The analyzer propagates these values into `summary.json`, `metrics.csv`, and
 aggregate statistics.
 
-## `clm` Integration
+## Legacy `clm` Integration
 
-`clm run` accepts one or more load profiles:
+`clm run` accepts one or more legacy load profiles:
 
 ```bash
 clm run --env config/env.yaml --method precopy --repeats 100 --load download --analyse

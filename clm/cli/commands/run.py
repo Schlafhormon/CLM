@@ -15,7 +15,10 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         "--load",
         action="append",
         default=None,
-        help="Loadprofil(e): idle|heavy|cpu|wrk1|wrk2|wrk3|download|upload|stream; repeatable oder CSV",
+        help=(
+            "Legacy-Forschungsloadprofil(e): idle|heavy|cpu|wrk1|wrk2|wrk3|download|upload|stream; "
+            "ohne --load laeuft eine normale Migration ohne synthetische Last"
+        ),
     )
     parser.add_argument("--no-monitor", action="store_true")
     parser.add_argument("--no-migrate", action="store_true")

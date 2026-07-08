@@ -246,6 +246,9 @@ Tasks:
 
 - Keep tests green.
 - Mark workload simulation and paper analysis as legacy.
+- Keep `workload/` as a compatibility path until the legacy load CLI and tests
+  can be moved safely; document `examples/flask-workload/` as the intended
+  future example location.
 - Add architecture docs.
 - Add a high-level config schema draft.
 - Add a compatibility policy for the current CLI.

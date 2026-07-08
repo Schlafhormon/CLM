@@ -189,6 +189,8 @@ for `cpu`. These profiles came from the research setup, depend on the Flask
 example workload in `workload/flask_app/`, and are not intended to remain part
 of the core orchestrator. New operator workflows should use app probes and
 external traffic/load generation instead of CLM-managed synthetic profiles.
+When `traffic.mode` is `external`, `command`, or `none`, CLM fails fast if a
+legacy synthetic load profile resolves to `load.target: vip`.
 
 Useful run switches:
 

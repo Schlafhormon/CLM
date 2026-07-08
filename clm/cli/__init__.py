@@ -1004,28 +1004,54 @@ def parse_load_modes(load_flags) -> list:
 
 def _load_target_urls(cfg: dict, selector: str):
     # Load target urls.
-    vip = cfg["vip"]
-    port = vip["port"]
+    port = traffic_port_for(cfg)
+    use_vip = traffic_uses_vip(cfg)
     mapping = {
         "src": f"http://{host_ip(cfg, 'source')}:{port}",
         "dst": f"http://{host_ip(cfg, 'dest')}:{port}",
-        "vip": f"http://{vip['addr']}:{port}",
     }
+    if use_vip:
+        vip = cfg.get("vip") or {}
+        mapping["vip"] = f"http://{vip['addr']}:{port}"
     out = []
     for raw in str(selector or "vip").split(","):
         key = raw.strip().lower()
         if not key:
             continue
-        keys = ["src", "dst", "vip"] if key == "all" else [key]
+        keys = ["src", "dst"] + (["vip"] if use_vip else []) if key == "all" else [key]
         for k in keys:
             if k not in mapping:
-                die(f"ungueltiger load.target Wert: {k} (erlaubt: src,dst,vip,all)")
+                allowed = "src,dst,all" if not use_vip else "src,dst,vip,all"
+                die(f"ungueltiger load.target Wert: {k} fuer traffic.mode={traffic_mode_for(cfg)} (erlaubt: {allowed})")
             item = (k, mapping[k])
             if item not in out:
                 out.append(item)
     if not out:
-        out.append(("vip", mapping["vip"]))
+        default_key = "vip" if use_vip else "dst"
+        out.append((default_key, mapping[default_key]))
     return out
+
+
+def validate_load_targets(cfg: dict, load_modes=None) -> None:
+    # Resolve configured synthetic load targets before run side effects.
+    modes = parse_load_modes(load_modes)
+    if not modes:
+        return
+
+    load_cfg = cfg.get("load", {})
+    if "cpu" in modes:
+        _load_target_urls(cfg, (load_cfg.get("cpu") or {}).get("target", "all"))
+    for wrk_mode in [mode for mode in modes if mode.startswith("wrk")]:
+        wrk_cfg = load_cfg.get(wrk_mode)
+        if not isinstance(wrk_cfg, dict):
+            die(f"wrk load profile '{wrk_mode}' ist in env.yaml nicht konfiguriert.")
+        _load_target_urls(cfg, wrk_cfg.get("target", "vip"))
+    if "download" in modes:
+        _load_target_urls(cfg, (load_cfg.get("download") or {}).get("target", "vip"))
+    if "upload" in modes:
+        _load_target_urls(cfg, (load_cfg.get("upload") or {}).get("target", "vip"))
+    if "stream" in modes:
+        _load_target_urls(cfg, (load_cfg.get("stream") or {}).get("target", "vip"))
 
 
 def _spawn_load_loop(logs_root: str, run_id: str, proc_id: str, body: str):
@@ -1973,9 +1999,10 @@ def run_cli(
 
     runs_root = cfg["paths"]["runs_root"]
     logs_root = cfg["paths"]["logs_root"]
+    load_modes = parse_load_modes(load_flags)
+    validate_load_targets(cfg, load_modes)
     ensure_dir(runs_root)
     ensure_dir(logs_root)
-    load_modes = parse_load_modes(load_flags)
     raw_load_tokens = []
     if load_flags is None:
         raw_load_tokens = ["idle"]

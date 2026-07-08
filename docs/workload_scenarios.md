@@ -14,6 +14,9 @@ No-load runs also keep the runtime monitor on the core target set: source and
 destination health/reachability plus explicit `probes:` entries. They do not
 configure download, upload, stream, or `wrk` load goals, and they do not require
 VIP metrics unless `traffic.mode: vip` or an explicit VIP probe is configured.
+For `traffic.mode: external`, `command`, or `none`, legacy synthetic load
+targets must resolve to `src`, `dst`, or `all`; CLM rejects `load.target: vip`
+before the run starts.
 
 The current Flask workload lives under `workload/flask_app/`. The intended
 low-risk transition is to keep that path working while documenting

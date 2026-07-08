@@ -23,6 +23,11 @@ destination readiness/health checks. Default monitoring tracks source and
 destination probes only. VIP probes and VIP burst events are enabled by the
 `vip` backend or by explicit monitor/load configuration.
 
+Legacy synthetic load profiles are still lab-oriented. When `traffic.mode` is
+`external`, `command`, or `none`, CLM rejects `load.target: vip` before run
+side effects. Use `src`, `dst`, `all`, explicit probes, or traffic/load tooling
+outside CLM for non-VIP setups.
+
 ## Examples
 
 External traffic:

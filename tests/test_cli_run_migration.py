@@ -112,6 +112,46 @@ class RunMigrationTests(unittest.TestCase):
         self.assertIn("traffic hook switch is a shell string", err)
         self.assertIn("allow_shell", err)
 
+    def test_run_cli_blocks_external_legacy_vip_load_before_side_effects(self):
+        cfg = deepcopy(cli.DEFAULTS)
+        cfg["traffic"] = {"mode": "external"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runs_root = Path(tmp) / "runs"
+            logs_root = Path(tmp) / "logs"
+            cfg["paths"]["runs_root"] = str(runs_root)
+            cfg["paths"]["logs_root"] = str(logs_root)
+            stderr = io.StringIO()
+            with patch("clm.cli.cleanup_dest") as cleanup_dest, \
+                 patch("clm.cli.reset_source") as reset_source, \
+                 patch("clm.cli.start_monitor") as start_monitor, \
+                 patch("clm.cli.start_load") as start_load, \
+                 patch("clm.cli.run_migration") as run_migration, \
+                 redirect_stderr(stderr):
+                with self.assertRaises(SystemExit) as ctx:
+                    cli.run_cli(
+                        cfg,
+                        method="precopy",
+                        repeats=1,
+                        load_flags=["wrk1"],
+                        no_monitor=False,
+                        no_migrate=False,
+                        no_cleanup=False,
+                        auto_analyse=False,
+                        env_path="config/env.yaml",
+                        cli_argv=["run", "--method", "precopy", "--load", "wrk1"],
+                    )
+
+            self.assertEqual(ctx.exception.code, 1)
+            self.assertFalse(runs_root.exists())
+            self.assertFalse(logs_root.exists())
+        self.assertIn("traffic.mode=external", stderr.getvalue())
+        cleanup_dest.assert_not_called()
+        reset_source.assert_not_called()
+        start_monitor.assert_not_called()
+        start_load.assert_not_called()
+        run_migration.assert_not_called()
+
     def test_run_remote_cli_adapter_still_delegates_to_shexecutor_run(self):
         expected = SimpleNamespace(returncode=0, stdout="ok", stderr="")
 

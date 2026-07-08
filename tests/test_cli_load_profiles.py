@@ -65,6 +65,22 @@ class CliLoadProfilesTests(unittest.TestCase):
         self.assertIn("--latency", body)
         self.assertIn("http://192.168.13.50:8080/ready", body)
 
+    def test_external_load_targets_do_not_default_to_vip(self):
+        cfg = copy.deepcopy(cli.DEFAULTS)
+        cfg["traffic"] = {"mode": "external"}
+
+        targets = cli._load_target_urls(cfg, "all")
+
+        self.assertEqual(
+            targets,
+            [
+                ("src", "http://192.168.13.10:8080"),
+                ("dst", "http://192.168.13.15:8080"),
+            ],
+        )
+        with self.assertRaises(SystemExit):
+            cli._load_target_urls(cfg, "vip")
+
     def test_monitor_cmd_without_load_uses_core_targets_only(self):
         cfg = copy.deepcopy(cli.DEFAULTS)
 

@@ -2,7 +2,9 @@
 
 
 import copy
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import clm.cli as cli
@@ -131,6 +133,59 @@ class CliLoadProfilesTests(unittest.TestCase):
         self.assertIn("service=http://service.example/health", joined)
         self.assertIn("vip=192.168.13.50:8080", joined)
         self.assertNotIn("vip=http://192.168.13.50:8080/health", joined)
+
+    def test_start_monitor_uses_local_executor_start(self):
+        cfg = copy.deepcopy(cli.DEFAULTS)
+        fake_handle = object()
+        fake_executor = mock.Mock()
+        fake_executor.start.return_value = fake_handle
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base_out = str(Path(tmp) / "monitor" / "mon")
+            log_path = str(Path(tmp) / "logs" / "monitor.log")
+            with mock.patch("clm.cli.LocalExecutor", return_value=fake_executor), \
+                 mock.patch("clm.cli.monitor_cmd", return_value=["monitor-tool", "--run", "run-1"]):
+                proc, fp = cli.start_monitor(cfg, "run-1", base_out, log_path)
+
+            try:
+                self.assertIs(proc, fake_handle)
+                fake_executor.start.assert_called_once_with(
+                    ["monitor-tool", "--run", "run-1"],
+                    stdout=fp,
+                    stderr=fp,
+                    text=True,
+                )
+            finally:
+                fp.close()
+
+    def test_spawn_load_loop_uses_local_executor_start(self):
+        fake_handle = object()
+        fake_executor = mock.Mock()
+        fake_executor.start.return_value = fake_handle
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch("clm.cli.LocalExecutor", return_value=fake_executor):
+                proc, fp, proc_id = cli._spawn_load_loop(
+                    tmp,
+                    "run-1",
+                    "cpu-src-1",
+                    "  curl -fsS http://example.test/heavy >/dev/null || sleep 0.2",
+                )
+
+            try:
+                self.assertIs(proc, fake_handle)
+                self.assertEqual(proc_id, "cpu-src-1")
+                command = fake_executor.start.call_args.args[0]
+                self.assertEqual(command[:2], ["bash", "-lc"])
+                self.assertIn("echo $$ >", command[2])
+                self.assertIn("load-cpu-src-1-run-1.pid", command[2])
+                self.assertIn("while true; do", command[2])
+                self.assertIn("http://example.test/heavy", command[2])
+                self.assertEqual(fake_executor.start.call_args.kwargs["stdout"], fp)
+                self.assertEqual(fake_executor.start.call_args.kwargs["stderr"], fp)
+                self.assertTrue(fake_executor.start.call_args.kwargs["text"])
+            finally:
+                fp.close()
 
 
 if __name__ == "__main__":

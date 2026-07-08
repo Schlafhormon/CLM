@@ -97,6 +97,54 @@ class CommandResult:
         )
 
 
+@dataclass(frozen=True)
+class ProcessHandle:
+    """Handle for a background process started through a host executor."""
+
+    command: Command
+    process: subprocess.Popen
+
+    @property
+    def args(self) -> Command:
+        return self.command
+
+    @property
+    def pid(self) -> int:
+        return self.process.pid
+
+    @property
+    def returncode(self) -> Optional[int]:
+        return self.process.returncode
+
+    @property
+    def command_display(self) -> str:
+        return _command_to_display(self.command)
+
+    def poll(self) -> Optional[int]:
+        return self.process.poll()
+
+    def wait(self, timeout: Optional[float] = None) -> int:
+        return self.process.wait(timeout=timeout)
+
+    def send_signal(self, sig: int) -> None:
+        self.process.send_signal(sig)
+
+    def terminate(self) -> None:
+        self.process.terminate()
+
+    def kill(self) -> None:
+        self.process.kill()
+
+    def __str__(self) -> str:
+        return (
+            "ProcessHandle("
+            f"command={self.command_display!r}, "
+            f"pid={self.pid}, "
+            f"returncode={self.returncode}"
+            ")"
+        )
+
+
 class HostExecutor(abc.ABC):
     """Abstract command runner for one execution host."""
 
@@ -126,6 +174,19 @@ class HostExecutor(abc.ABC):
         on_output: Optional[StreamCallback] = None,
         text: bool = True,
     ) -> CommandResult:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def start(
+        self,
+        command: Command,
+        *,
+        cwd: Optional[str | Path] = None,
+        env: Optional[Mapping[str, str]] = None,
+        stdout: Any = None,
+        stderr: Any = None,
+        text: bool = True,
+    ) -> ProcessHandle:
         raise NotImplementedError
 
 
@@ -224,6 +285,26 @@ class LocalExecutor(HostExecutor):
             result.check_returncode()
         return result
 
+    def start(
+        self,
+        command: Command,
+        *,
+        cwd: Optional[str | Path] = None,
+        env: Optional[Mapping[str, str]] = None,
+        stdout: Any = None,
+        stderr: Any = None,
+        text: bool = True,
+    ) -> ProcessHandle:
+        proc = self._popen_factory(
+            command,
+            stdout=stdout,
+            stderr=stderr,
+            text=text,
+            cwd=cwd,
+            env=env,
+        )
+        return ProcessHandle(command=command, process=proc)
+
 
 class SshExecutor(HostExecutor):
     """Run shell scripts on a remote host through SSH."""
@@ -313,5 +394,26 @@ class SshExecutor(HostExecutor):
             self.build_command(command),
             check=check,
             on_output=on_output,
+            text=text,
+        )
+
+    def start(
+        self,
+        command: Command,
+        *,
+        cwd: Optional[str | Path] = None,
+        env: Optional[Mapping[str, str]] = None,
+        stdout: Any = None,
+        stderr: Any = None,
+        text: bool = True,
+    ) -> ProcessHandle:
+        if cwd is not None:
+            raise NotImplementedError("SshExecutor cwd handling is not implemented yet")
+        if env is not None:
+            raise NotImplementedError("SshExecutor remote env handling is not implemented yet")
+        return self._local.start(
+            self.build_command(command),
+            stdout=stdout,
+            stderr=stderr,
             text=text,
         )

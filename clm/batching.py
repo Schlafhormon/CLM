@@ -8,12 +8,13 @@ import json
 import os
 import re
 import socket
-import subprocess
 import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
+
+from clm.host import LocalExecutor
 
 
 def utc_now_iso() -> str:
@@ -157,11 +158,10 @@ def create_batch_layout(runs_root: str, method: str, load: str) -> Dict[str, Pat
 
 def best_effort_git_commit(repo_path: str) -> Optional[str]:
     try:
-        proc = subprocess.run(
+        proc = LocalExecutor().run(
             ["git", "-C", str(Path(repo_path).expanduser()), "rev-parse", "--short", "HEAD"],
             check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture=True,
             text=True,
         )
         if proc.returncode == 0:

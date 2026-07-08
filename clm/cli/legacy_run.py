@@ -8,7 +8,6 @@ import re
 import shlex
 import shutil
 import signal
-import subprocess
 import sys
 import threading
 import time
@@ -32,7 +31,7 @@ from clm.batching import (
     resolve_batch_manifest,
     utc_now_iso as batch_now_iso,
 )
-from clm.host import LocalExecutor, SshExecutor
+from clm.host import LocalExecutor, ProcessHandle, SshExecutor
 from clm.migration.storage import CleanupPolicy, artifact_paths_for
 
 try:
@@ -946,11 +945,11 @@ def start_monitor(
     ensure_dir(str(Path(log_path).parent))
     log_fp = open(log_path, "w", encoding="utf-8")
     cmd = monitor_cmd(cfg, run_id, base_out, load_modes=load_modes, events_log=events_log)
-    proc = subprocess.Popen(cmd, stdout=log_fp, stderr=log_fp, text=True)
+    proc = LocalExecutor().start(cmd, stdout=log_fp, stderr=log_fp, text=True)
     return proc, log_fp
 
 
-def stop_process(proc: subprocess.Popen, log_fp, name: str, timeout: int = 10) -> None:
+def stop_process(proc: ProcessHandle, log_fp, name: str, timeout: int = 10) -> None:
     # Stop process.
     if proc is None:
         return
@@ -1067,7 +1066,7 @@ def _spawn_load_loop(logs_root: str, run_id: str, proc_id: str, body: str):
         f"{body}\n"
         "done\n"
     )
-    proc = subprocess.Popen(["bash", "-lc", script], stdout=fp, stderr=fp, text=True)
+    proc = LocalExecutor().start(["bash", "-lc", script], stdout=fp, stderr=fp, text=True)
     return proc, fp, proc_id
 
 

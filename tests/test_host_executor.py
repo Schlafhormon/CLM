@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from clm.host import CommandResult, LocalExecutor, SshExecutor
+from clm.host import CommandResult, LocalExecutor, ProcessHandle, SshExecutor
 
 
 class _FakeStdout:
@@ -28,6 +28,33 @@ class _FakePopenProcess:
 
     def wait(self):
         return self.returncode
+
+
+class _FakeBackgroundProcess:
+    def __init__(self):
+        self.pid = 4242
+        self.returncode = None
+        self.signals = []
+        self.terminated = False
+        self.killed = False
+        self.wait_timeout = None
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        self.wait_timeout = timeout
+        self.returncode = 0
+        return self.returncode
+
+    def send_signal(self, sig):
+        self.signals.append(sig)
+
+    def terminate(self):
+        self.terminated = True
+
+    def kill(self):
+        self.killed = True
 
 
 class LocalExecutorTests(unittest.TestCase):
@@ -102,6 +129,54 @@ class LocalExecutorTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.returncode, 23)
         self.assertIn("failure", ctx.exception.output)
+
+    def test_start_returns_process_handle_and_passes_background_options(self):
+        calls = {}
+        fake_process = _FakeBackgroundProcess()
+
+        def fake_popen(command, **kwargs):
+            calls["command"] = command
+            calls["kwargs"] = kwargs
+            return fake_process
+
+        result = LocalExecutor(popen_factory=fake_popen).start(
+            ["tool", "token=abc123"],
+            stdout="out",
+            stderr="err",
+            text=False,
+            cwd="/tmp",
+            env={"A": "B"},
+        )
+
+        self.assertIsInstance(result, ProcessHandle)
+        self.assertIs(result.process, fake_process)
+        self.assertEqual(result.pid, 4242)
+        self.assertEqual(result.args, ["tool", "token=abc123"])
+        self.assertEqual(calls["command"], ["tool", "token=abc123"])
+        self.assertEqual(calls["kwargs"]["stdout"], "out")
+        self.assertEqual(calls["kwargs"]["stderr"], "err")
+        self.assertFalse(calls["kwargs"]["text"])
+        self.assertEqual(calls["kwargs"]["cwd"], "/tmp")
+        self.assertEqual(calls["kwargs"]["env"], {"A": "B"})
+
+        result.send_signal(2)
+        self.assertEqual(fake_process.signals, [2])
+        self.assertEqual(result.wait(timeout=3), 0)
+        self.assertEqual(fake_process.wait_timeout, 3)
+        self.assertEqual(result.poll(), 0)
+        result.terminate()
+        result.kill()
+        self.assertTrue(fake_process.terminated)
+        self.assertTrue(fake_process.killed)
+
+    def test_process_handle_string_redacts_secrets(self):
+        fake_process = _FakeBackgroundProcess()
+        handle = ProcessHandle(["tool", "--password", "open-sesame"], fake_process)
+
+        text = str(handle)
+
+        self.assertIn("--password <redacted>", text)
+        self.assertNotIn("open-sesame", text)
 
 
 class CommandResultTests(unittest.TestCase):
@@ -179,6 +254,26 @@ class SshExecutorTests(unittest.TestCase):
         self.assertTrue(calls["command"][-1].startswith("bash -lc "))
         self.assertIn("printf hi", calls["command"][-1])
         self.assertEqual(calls["kwargs"]["stderr"], subprocess.STDOUT)
+
+    def test_start_uses_built_ssh_command_without_connecting(self):
+        calls = {}
+        fake_process = _FakeBackgroundProcess()
+
+        def fake_popen(command, **kwargs):
+            calls["command"] = command
+            calls["kwargs"] = kwargs
+            return fake_process
+
+        executor = SshExecutor("host1", popen_factory=fake_popen)
+        result = executor.start("printf hi", stdout="out", stderr="err", text=False)
+
+        self.assertIsInstance(result, ProcessHandle)
+        self.assertEqual(calls["command"][0], "ssh")
+        self.assertEqual(calls["command"][-3], "host1")
+        self.assertTrue(calls["command"][-1].startswith("bash -lc "))
+        self.assertEqual(calls["kwargs"]["stdout"], "out")
+        self.assertEqual(calls["kwargs"]["stderr"], "err")
+        self.assertFalse(calls["kwargs"]["text"])
 
     def test_streamed_result_redacts_secrets_from_ssh_command_display(self):
         def fake_popen(command, **kwargs):

@@ -1,5 +1,9 @@
 version: 1
 
+# Advanced/optional analysis config.
+# Batch metrics, aggregate statistics, and plot definitions are retained for
+# compatibility, but they are not part of the future core migration path.
+
 ingest:
   summary_filename: summary.json
   on_missing_summary: nan

@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 
 # Analysis pipeline.
+#
+# Compatibility module: existing imports from clm.analysis_pipeline remain
+# supported. New code should use clm.analysis.summary for core summaries and
+# clm.analysis.advanced for optional batch/statistics/plot analysis.
 
 from __future__ import annotations
 

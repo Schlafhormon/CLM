@@ -76,7 +76,7 @@ def main(argv=None) -> int:
 
     runs_root = _resolve_runs_root(args.env, args.runs_root)
     try:
-        from clm.analysis_pipeline import generate_plots_for_runs_dir, generate_plots_for_targets_collection, load_analysis_config
+        from clm.analysis.advanced import generate_plots_for_runs_dir, generate_plots_for_targets_collection, load_analysis_config
     except Exception as exc:
         return _die(f"analysis dependencies missing: {exc}. Run `pip install -e .` first.")
 

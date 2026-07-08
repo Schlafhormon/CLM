@@ -2023,7 +2023,7 @@ def run_cli(
     if auto_analyse and not abort_requested:
         log(f"Batch {batch_meta['batch_id']}: auto-analysis start")
         try:
-            from clm.analysis_pipeline import analyze_runs_dir, load_analysis_config
+            from clm.analysis.advanced import analyze_runs_dir, load_analysis_config
 
             analysis_cfg = load_analysis_config(analysis_config_path)
             analysis_result = analyze_runs_dir(
@@ -2147,7 +2147,7 @@ def analyse_cli(
     combined_output_dir: Optional[str] = None,
     batch_manifest: Optional[str] = None,
 ) -> int:
-    from clm.analysis_pipeline import analyze_runs_dir, analyze_targets_collection, load_analysis_config
+    from clm.analysis.advanced import analyze_runs_dir, analyze_targets_collection, load_analysis_config
 
     cfg_analysis = load_analysis_config(config_path)
     targets = _resolve_analysis_targets(cfg, batch_selector=batch_selector, runs_dir=runs_dir, batch_manifest=batch_manifest)
@@ -2212,7 +2212,7 @@ def plots_cli(
     combined_output_dir: Optional[str] = None,
     batch_manifest: Optional[str] = None,
 ) -> int:
-    from clm.analysis_pipeline import generate_plots_for_runs_dir, generate_plots_for_targets_collection, load_analysis_config
+    from clm.analysis.advanced import generate_plots_for_runs_dir, generate_plots_for_targets_collection, load_analysis_config
 
     cfg_analysis = load_analysis_config(config_path)
     targets = _resolve_analysis_targets(cfg, batch_selector=batch_selector, runs_dir=runs_dir, batch_manifest=batch_manifest)

@@ -3,6 +3,11 @@
 This file defines the main measurement fields produced by the monitor, analyzer,
 and batch analysis pipeline.
 
+For the core migration path, CLM should expose a concise summary first: status,
+duration, downtime, errors, and artifact paths. Batch-level metrics, aggregate
+statistics, and plots are advanced optional analysis outputs and are expected to
+move out of the required core over time.
+
 ## Data Sources
 
 | Source | Role |

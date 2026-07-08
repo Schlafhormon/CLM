@@ -1,6 +1,9 @@
 version: 1
 extends: analysis.yaml
 
+# Paper-specific advanced/optional analysis overlays. These presets are useful
+# for research comparisons, but should remain outside the default CLM core.
+
 plots:
   # Ergaenzt config/analysis.yaml um Paper-Views fuer die Einzelszenarien:
   # idle, cpu, wrk1, wrk2, wrk3, download, upload, stream.

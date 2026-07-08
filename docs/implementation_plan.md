@@ -358,6 +358,10 @@ Tasks:
 - Remove workload-specific assumptions from default analysis.
 - Add optional report generation.
 - Keep raw artifact parsing available for troubleshooting.
+- Treat `clm.analysis.summary` as the core-facing API for duration, downtime,
+  status, errors, and artifact paths.
+- Treat batch evaluation, summary statistics, paper views, and plot generation
+  as advanced optional analysis features, not as required CLM core behavior.
 
 ### Phase 9: Packaging And Deployment
 
@@ -640,4 +644,3 @@ Arbeite im Review-Stil:
 - Fuehre `python -m pytest` aus, wenn praktikabel.
 - Schliesse mit einer priorisierten Fix-Liste.
 ```
-

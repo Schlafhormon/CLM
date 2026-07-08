@@ -139,6 +139,91 @@ class CoreConfigTests(unittest.TestCase):
         self.assertEqual(traffic.interfaces["source"], "eth-src")
         self.assertEqual(traffic.interfaces["dest"], "eth-dst")
 
+    def test_load_clm_v1_example_derives_core_request(self):
+        request = core_config.load_clm_v1_migration_request("config/clm.example.yaml")
+
+        self.assertEqual(request.source.host, "source.example.net")
+        self.assertEqual(request.destination.host, "dest.example.net")
+        self.assertEqual(request.monitor.host, "local")
+        self.assertTrue(request.monitor.local)
+        self.assertEqual(request.runtime.type, "runc")
+        self.assertEqual(request.runtime.privilege_mode, "rootful")
+        self.assertFalse(request.runtime.rootless)
+        self.assertEqual(request.container.identifier, "web")
+        self.assertEqual(request.container.bundle_path, "/srv/clm/runc-bundles/web")
+        self.assertEqual(request.criu.binary, "/usr/sbin/criu")
+        self.assertEqual(request.criu.custom_build, "criu-clm-tcp")
+        self.assertIn("lazy-pages", request.criu.features)
+        self.assertEqual(request.strategy, "stop-and-copy")
+        self.assertEqual(request.storage.mode, "shared")
+        self.assertEqual(request.storage.share_root, "/mnt/criu")
+        self.assertEqual(request.storage.options["destination_root"], "/var/lib/criu-local")
+        self.assertEqual(request.storage.cleanup_policy["shared_images_policy"], "success_only")
+        self.assertEqual(request.traffic.mode, "external")
+        self.assertIn("verify", request.traffic.hooks)
+        self.assertEqual([probe.name for probe in request.probes], ["app-health", "app-port", "custom-ready"])
+        self.assertTrue(request.probes[0].required)
+        self.assertEqual(request.options["output"]["console_summary"], True)
+
+    def test_clm_v1_parser_accepts_container_group_and_command_traffic(self):
+        cfg = {
+            "version": 1,
+            "source": "src.example",
+            "destination": {"host": "dst.example", "ip": "10.0.0.2"},
+            "runtime": {"type": "containerd", "socket_path": "/run/containerd/containerd.sock", "rootless": True},
+            "container_group": {
+                "name": "stack",
+                "containers": [
+                    {"id": "db", "image": "postgres:16"},
+                    {"id": "web", "image": "example/web:latest"},
+                ],
+                "dependencies": {"web": ["db"]},
+            },
+            "strategy": {"mode": "pre-copy"},
+            "storage": {"mode": "rsync", "source_root": "/srv/criu", "destination_root": "/var/lib/clm"},
+            "traffic": {
+                "mode": "command",
+                "hooks": {
+                    "prepare": ["lbctl", "drain", "src.example"],
+                    "switch": ["lbctl", "activate", "dst.example"],
+                },
+            },
+        }
+
+        request = core_config.clm_v1_to_migration_request(cfg)
+
+        self.assertIsNone(request.container)
+        self.assertEqual(request.container_group.name, "stack")
+        self.assertEqual([item.identifier for item in request.container_group.containers], ["db", "web"])
+        self.assertEqual(request.container_group.dependencies["web"], ("db",))
+        self.assertEqual(request.runtime.type, "containerd")
+        self.assertTrue(request.runtime.rootless)
+        self.assertEqual(request.strategy, "pre-copy")
+        self.assertEqual(request.storage.mode, "rsync")
+        self.assertEqual(request.traffic.mode, "command")
+        self.assertEqual(request.traffic.hooks["switch"], ["lbctl", "activate", "dst.example"])
+
+    def test_clm_v1_validation_reports_shape_errors(self):
+        errors = core_config.validate_clm_v1_config(
+            {
+                "version": 1,
+                "source": "src.example",
+                "destination": "dst.example",
+                "container": {"id": "web"},
+                "container_group": {"containers": ["db", "web"]},
+                "runtime": {"privilege_mode": "admin"},
+                "strategy": {"mode": "teleport"},
+                "storage": {"mode": "sneakernet"},
+                "traffic": {"mode": "magic"},
+            }
+        )
+
+        self.assertTrue(any("exactly one" in error for error in errors))
+        self.assertTrue(any("privilege_mode" in error for error in errors))
+        self.assertTrue(any("Unknown migration strategy" in error for error in errors))
+        self.assertTrue(any("storage.mode" in error for error in errors))
+        self.assertTrue(any("traffic.mode" in error for error in errors))
+
 
 if __name__ == "__main__":
     unittest.main()

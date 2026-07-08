@@ -1,0 +1,177 @@
+# CLM config schema draft v1.
+# This file is the future operator-facing config and does not replace the
+# legacy config/env.example.yaml used by the current CLI path.
+
+version: 1
+
+source:
+  host: source.example.net
+  ip: 10.20.0.10
+  user: clm
+  port: 22
+  execution: ssh
+
+destination:
+  host: dest.example.net
+  ip: 10.20.0.20
+  user: clm
+  port: 22
+  execution: ssh
+
+monitor:
+  host: local
+  ip: 10.20.0.5
+  execution: local
+
+runtime:
+  # runc is the only runtime with migration execution today. docker and
+  # containerd are modeled for preflight/inspect and should fail fast for
+  # migration until their backends are implemented.
+  type: runc
+  privilege_mode: rootful
+  rootless: false
+  socket_path: null
+  api_path: null
+  # Rootless draft:
+  # privilege_mode: rootless
+  # rootless: true
+  # user_namespace: keep
+
+container:
+  id: web
+  image: example/web:latest
+  bundle_path: /srv/clm/runc-bundles/web
+  namespace: default
+  project: production
+
+# Use container_group instead of container for a multi-container migration.
+# container_group:
+#   name: web-stack
+#   ordered: true
+#   containers:
+#     - id: redis
+#       image: redis:7
+#       bundle_path: /srv/clm/runc-bundles/redis
+#     - id: web
+#       image: example/web:latest
+#       bundle_path: /srv/clm/runc-bundles/web
+#   dependencies:
+#     web: [redis]
+
+criu:
+  binary: /usr/sbin/criu
+  version: null
+  features:
+    - tcp-established
+    - lazy-pages
+  # Custom CRIU binary/build metadata is optional. The binary path above is
+  # the executable CLM should call; custom_build documents where it came from.
+  custom_build:
+    name: criu-clm-tcp
+    source: https://github.com/checkpoint-restore/criu
+    commit: null
+    build_dir: /opt/criu-clm
+
+strategy:
+  # auto resolves to the conservative stop-and-copy default for now.
+  # Explicit options: stop-and-copy, pre-copy, post-copy.
+  mode: auto
+  experimental_minimal_downtime: false
+  precopy:
+    pre_dump_rounds: 0
+    tcp_established: true
+  postcopy:
+    lazy_pages: true
+    lazy_port: 27027
+    readiness_required: true
+
+storage:
+  # shared means source and destination see the same checkpoint root.
+  # rsync is modeled for planning/preflight, but the current legacy runc
+  # migration scripts do not execute rsync transfer yet.
+  mode: shared
+  share_root: /mnt/criu
+  runs_root: /mnt/criu/runs
+  logs_root: /mnt/criu/logs
+  destination_root: /var/lib/criu-local
+  image_mode: shared
+  # Rsync draft:
+  # mode: rsync
+  # source_root: /var/lib/clm/checkpoints
+  # destination_root: /var/lib/clm/checkpoints
+  # remote_root: /var/lib/clm/checkpoints
+  # bandwidth_limit: null
+  # delete_extra: false
+
+traffic:
+  # external means CLM migrates and verifies readiness, but traffic is switched
+  # by an external load balancer, service mesh, route update, or operator flow.
+  mode: external
+  hooks:
+    verify:
+      - curl
+      - -fsS
+      - http://service.example.net/health
+
+  # Command traffic draft. Hooks should be argv lists. Shell strings require
+  # allow_shell: true and should be avoided unless the operator needs a shell.
+  # mode: command
+  # hooks:
+  #   prepare: [lbctl, drain, source.example.net]
+  #   switch: [lbctl, activate, dest.example.net]
+  #   verify: [curl, -fsS, http://service.example.net/health]
+  #   rollback: [lbctl, activate, source.example.net]
+
+  # Legacy lab VIP/GARP mode draft.
+  # mode: vip
+  # vip:
+  #   addr: 10.20.0.50
+  #   cidr: /24
+  #   port: 8080
+  #   if_source: eth0
+  #   if_dest: eth0
+  # vip_garp_count: 3
+  # vip_garp_interval_ms: 200
+  # vip_conntrack_clear_src: false
+
+probes:
+  - name: app-health
+    type: http
+    target: destination
+    url: http://10.20.0.20:8080/health
+    expected_statuses: [200]
+    interval_ms: 250
+    timeout_ms: 1000
+    required: true
+
+  - name: app-port
+    type: tcp
+    target: destination
+    host: 10.20.0.20
+    port: 8080
+    interval_ms: 250
+    timeout_ms: 1000
+    required: false
+
+  - name: custom-ready
+    type: command
+    target: destination
+    command: [curl, -fsS, http://10.20.0.20:8080/ready]
+    expected_exit_code: 0
+    timeout_ms: 2000
+    required: false
+
+cleanup:
+  shared_images_policy: success_only
+  local_images_policy: success_only
+  risky_actions_enabled: false
+  explicit_risky_actions: []
+
+output:
+  console_summary: true
+  json_result: /mnt/criu/runs/{migration_id}/result.json
+  event_log: /mnt/criu/logs/{migration_id}.ndjson
+  report:
+    format: markdown
+    path: /mnt/criu/runs/{migration_id}/report.md
+  artifacts_root: /mnt/criu/runs/{migration_id}

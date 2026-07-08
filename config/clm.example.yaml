@@ -73,7 +73,9 @@ criu:
     build_dir: /opt/criu-clm
 
 strategy:
-  # auto resolves to the conservative stop-and-copy default for now.
+  # auto resolves to the conservative stop-and-copy plan/preflight default for
+  # now. Executable legacy runc run paths are currently precopy and postcopy;
+  # clm run --method auto fails fast until stop-and-copy execution exists.
   # Explicit options: stop-and-copy, pre-copy, post-copy.
   mode: auto
   experimental_minimal_downtime: false

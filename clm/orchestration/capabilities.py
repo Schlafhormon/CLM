@@ -13,6 +13,9 @@ from clm.migration.traffic import select_traffic_backend
 from clm.runtimes import select_backend
 
 
+EXECUTABLE_RUN_STRATEGIES = ("precopy", "postcopy")
+
+
 def validate_run_capabilities(cfg: dict[str, Any], method: str) -> PreflightResult:
     """Validate capabilities required by the legacy ``clm run`` path.
 
@@ -59,7 +62,10 @@ def validate_run_capabilities(cfg: dict[str, Any], method: str) -> PreflightResu
         strategy = select_strategy(cfg, requested=method)
         checks.append({"name": "strategy: selected", "ok": True, "detail": strategy.name})
         if not isinstance(strategy, LegacyAdapterStrategy) or strategy.legacy_method not in ("precopy", "postcopy"):
-            blockers.append(f"Migration strategy '{strategy.name}' is not implemented for clm run")
+            blockers.append(
+                f"Migration strategy '{strategy.name}' is plan/preflight only and is not executable by clm run; "
+                f"executable strategies: {', '.join(EXECUTABLE_RUN_STRATEGIES)}"
+            )
     except Exception as exc:
         checks.append({"name": "strategy: selected", "ok": False, "detail": str(exc)})
         blockers.append(str(exc))
@@ -157,6 +163,60 @@ def method_for_preflight(cfg: dict[str, Any]) -> str:
         or cfg.get("method")
         or cfg.get("strategy")
         or "precopy"
+    )
+
+
+def validate_plan_capabilities(cfg: dict[str, Any], method: str) -> PreflightResult:
+    """Validate side-effect-free plan/preflight capability for a strategy."""
+
+    checks: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    blockers: list[str] = []
+    metadata: dict[str, Any] = {"method": method}
+
+    try:
+        strategy = select_strategy(cfg, requested=method)
+        checks.append({"name": "strategy: selected", "ok": True, "detail": strategy.name})
+        strategy_result = strategy.preflight(cfg)
+        checks.extend(strategy_result.checks)
+        warnings.extend(strategy_result.warnings)
+        blockers.extend(strategy_result.blockers)
+        metadata.update(strategy_result.metadata)
+    except Exception as exc:
+        checks.append({"name": "strategy: selected", "ok": False, "detail": str(exc)})
+        blockers.append(str(exc))
+
+    try:
+        backend = select_backend(cfg)
+        checks.append({"name": "runtime: selected", "ok": True, "detail": backend.runtime.type})
+        metadata["runtime"] = backend.runtime.type
+    except Exception as exc:
+        checks.append({"name": "runtime: selected", "ok": False, "detail": str(exc)})
+        blockers.append(str(exc))
+
+    try:
+        storage = select_storage_backend(cfg)
+        checks.append({"name": "storage: selected", "ok": True, "detail": storage.plan.mode})
+    except Exception as exc:
+        checks.append({"name": "storage: selected", "ok": False, "detail": str(exc)})
+        blockers.append(str(exc))
+
+    try:
+        traffic_result = select_traffic_backend(cfg).preflight(cfg)
+        checks.extend(traffic_result.checks)
+        warnings.extend(traffic_result.warnings)
+        blockers.extend(traffic_result.blockers)
+        if traffic_result.metadata:
+            metadata["traffic"] = traffic_result.metadata
+    except Exception as exc:
+        checks.append({"name": "traffic: selected", "ok": False, "detail": str(exc)})
+        blockers.append(str(exc))
+
+    return PreflightResult(
+        checks=tuple(checks),
+        warnings=tuple(str(w) for w in warnings),
+        blockers=tuple(_dedupe(blockers)),
+        metadata=metadata,
     )
 
 

@@ -1530,9 +1530,10 @@ def analyze_run(cfg: dict, base_out: str, events_log: str, run_dir: str):
     return res.returncode
 
 
-def preflight(cfg: dict, dry_run: bool = False) -> int:
+def preflight(cfg: dict, dry_run: bool = False, method: Optional[str] = None) -> int:
     # Run preflight checks.
-    from clm.orchestration.capabilities import method_for_preflight
+    from clm.migration.strategies import canonical_strategy_name
+    from clm.orchestration.capabilities import method_for_preflight, validate_plan_capabilities
 
     checks = []
 
@@ -1548,7 +1549,31 @@ def preflight(cfg: dict, dry_run: bool = False) -> int:
         print(f"- postcopy: {cfg['postcopy']}")
         return 0
 
-    capability_result = validate_run_capabilities(cfg, method_for_preflight(cfg))
+    selected_method = method if method is not None else method_for_preflight(cfg)
+    try:
+        selected_strategy = canonical_strategy_name(selected_method)
+    except Exception:
+        selected_strategy = ""
+
+    if method is not None and selected_strategy in ("auto", "stop-and-copy"):
+        capability_result = validate_plan_capabilities(cfg, selected_method)
+        print("Capability gate:")
+        for check in capability_result.checks:
+            prefix = "[OK]  " if bool(check.get("ok", False)) else "[FAIL]"
+            detail = check.get("detail") or ""
+            print(f"{prefix} {check.get('name')} {detail}".rstrip())
+        for warning in capability_result.warnings:
+            print(f"[WARN] capability warning {warning}")
+        for blocker in capability_result.blockers:
+            print(f"[FAIL] capability blocker {blocker}")
+        if capability_result.ok:
+            strategy = capability_result.metadata.get("strategy") or selected_strategy
+            print(f"\nPreflight OK: strategy {strategy} is plan/preflight-only and not executable by clm run")
+            return 0
+        print(f"\nPreflight FAILED: {len(capability_result.blockers)} Capability-Blocker, {len(capability_result.warnings)} Warnungen")
+        return 1
+
+    capability_result = validate_run_capabilities(cfg, selected_method)
     if not capability_result.ok:
         print_preflight_capability_failure(capability_result)
         return 1

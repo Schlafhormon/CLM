@@ -98,6 +98,16 @@ class StrategyPlanAndAdapterTests(unittest.TestCase):
         self.assertEqual(result.metadata["legacy_method"], "precopy")
         self.assertTrue(any(check["name"] == "strategy: pre-copy legacy adapter selected" for check in result.checks))
 
+    def test_stop_and_copy_preflight_is_plan_only_not_blocked(self):
+        cfg = deepcopy(cli.DEFAULTS)
+
+        result = select_strategy(requested="stop-and-copy").preflight(cfg)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.metadata["strategy"], "stop-and-copy")
+        self.assertFalse(result.metadata["executable"])
+        self.assertTrue(any("plan/preflight only" in warning for warning in result.warnings))
+
     def test_selection_accepts_migration_request(self):
         cfg = deepcopy(cli.DEFAULTS)
         request = core_config.legacy_env_to_migration_request(cfg, method="postcopy")

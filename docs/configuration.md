@@ -90,6 +90,15 @@ actual CRIU binary and fail with actionable diagnostics.
 to prefer lower-downtime modes later. Today automatic selection should stay
 conservative unless a strategy is requested directly.
 
+Current execution status:
+
+- `clm plan --method auto` and `clm preflight --method auto` may select
+  `stop-and-copy` as the conservative plan-only default.
+- `clm run` can execute only the legacy runc `precopy` and `postcopy` paths.
+- `clm run --method auto` and `clm run --method stop-and-copy` fail fast
+  because stop-and-copy final dump, transfer, restore, and traffic handling are
+  not implemented as an executable backend yet.
+
 ## Storage
 
 `storage.mode` accepts:

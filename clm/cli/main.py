@@ -6,7 +6,7 @@ import argparse
 from collections.abc import Sequence
 
 from clm.cli import load_env
-from clm.cli.commands import analyse, plots, preflight, run
+from clm.cli.commands import analyse, plan, plots, preflight, run
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -15,6 +15,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     preflight.configure_parser(sub.add_parser("preflight", help="Preflight-Checks"))
+    plan.configure_parser(sub.add_parser("plan", help="Side-effect-free Migrationsplan anzeigen"))
     run.configure_parser(sub.add_parser("run", help="Run ausfuehren"))
     analyse.configure_parser(sub.add_parser("analyse", aliases=["analyze"], help="Batch oder Runs analysieren"))
     plots.configure_parser(sub.add_parser("plots", help="Plots fuer Batch oder Runs erzeugen"))
@@ -28,6 +29,8 @@ def dispatch(args: argparse.Namespace, argv: Sequence[str] | None = None) -> int
 
     if args.cmd == "preflight":
         return preflight.handle(args, cfg)
+    if args.cmd == "plan":
+        return plan.handle(args, cfg)
     if args.cmd == "run":
         return run.handle(args, cfg, env_path=env_path, argv=argv)
     if args.cmd in ("analyse", "analyze"):

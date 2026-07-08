@@ -91,6 +91,24 @@ class CliPreflightCapabilityGateTests(unittest.TestCase):
 
         self.assertIn("Unsupported storage backend: stream", out)
 
+    def test_preflight_allows_auto_plan_only_without_remote_checks(self):
+        cfg = deepcopy(cli.DEFAULTS)
+        stdout = io.StringIO()
+        with patch("clm.cli.run_remote", side_effect=AssertionError("remote call should not happen")) as run_remote, \
+             patch("clm.cli.run_shell_local", side_effect=AssertionError("local shell check should not happen")) as run_shell_local, \
+             patch("clm.cli.ensure_dir", side_effect=AssertionError("NFS write setup should not happen")) as ensure_dir, \
+             redirect_stdout(stdout):
+            rc = cli.preflight(cfg, method="auto")
+
+        self.assertEqual(rc, 0)
+        run_remote.assert_not_called()
+        run_shell_local.assert_not_called()
+        ensure_dir.assert_not_called()
+        out = stdout.getvalue()
+        self.assertIn("strategy: stop-and-copy selected", out)
+        self.assertIn("plan/preflight-only", out)
+        self.assertIn("not executable by clm run", out)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -43,11 +43,16 @@ class StopAndCopyStrategy(MigrationStrategy):
                 {
                     "name": "strategy: stop-and-copy selected",
                     "ok": True,
-                    "detail": "safe automatic default",
+                    "detail": "safe plan/preflight default",
+                },
+                {
+                    "name": "strategy: stop-and-copy executable",
+                    "ok": True,
+                    "detail": "plan-only; clm run support is not implemented",
                 },
             ),
-            blockers=("stop-and-copy execution is not implemented yet.",),
-            metadata={"strategy": self.name, "implemented": False},
+            warnings=("stop-and-copy is available for plan/preflight only; clm run cannot execute it yet.",),
+            metadata={"strategy": self.name, "implemented": False, "executable": False},
         )
 
     def run(
@@ -59,4 +64,3 @@ class StopAndCopyStrategy(MigrationStrategy):
         migrate_log: str,
     ) -> MigrationResult:
         raise MigrationNotImplementedError("stop-and-copy strategy execution is not implemented yet")
-

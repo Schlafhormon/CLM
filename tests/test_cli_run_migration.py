@@ -6,6 +6,7 @@ import io
 import tempfile
 import unittest
 from contextlib import redirect_stderr
+from contextlib import redirect_stdout
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from unittest.mock import ANY, patch
 import yaml
 
 from clm import cli
+from clm.cli.main import main as cli_main
 
 
 class RunMigrationTests(unittest.TestCase):
@@ -88,7 +90,51 @@ class RunMigrationTests(unittest.TestCase):
 
         err = self._run_cli_expect_capability_gate(cfg, method="stop-and-copy")
 
-        self.assertIn("Migration strategy 'stop-and-copy' is not implemented", err)
+        self.assertIn("Migration strategy 'stop-and-copy' is plan/preflight only", err)
+        self.assertIn("executable strategies: precopy, postcopy", err)
+
+    def test_run_cli_blocks_auto_before_side_effects(self):
+        cfg = deepcopy(cli.DEFAULTS)
+
+        err = self._run_cli_expect_capability_gate(cfg, method="auto")
+
+        self.assertIn("Migration strategy 'stop-and-copy' is plan/preflight only", err)
+        self.assertIn("executable strategies: precopy, postcopy", err)
+
+    def test_clm_run_method_auto_reaches_capability_gate(self):
+        cfg = deepcopy(cli.DEFAULTS)
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg["paths"]["runs_root"] = str(Path(tmp) / "runs")
+            cfg["paths"]["logs_root"] = str(Path(tmp) / "logs")
+            with patch("clm.cli.main.load_env", return_value=cfg), \
+                 patch("clm.cli.cleanup_dest") as cleanup_dest, \
+                 patch("clm.cli.reset_source") as reset_source, \
+                 patch("clm.cli.start_monitor") as start_monitor, \
+                 patch("clm.cli.start_load") as start_load, \
+                 patch("clm.cli.run_migration") as run_migration, \
+                 redirect_stderr(stderr):
+                rc = cli_main(["--env", "dummy.yaml", "run", "--method", "auto"])
+
+        self.assertEqual(rc, 1)
+        self.assertIn("Migration strategy 'stop-and-copy' is plan/preflight only", stderr.getvalue())
+        cleanup_dest.assert_not_called()
+        reset_source.assert_not_called()
+        start_monitor.assert_not_called()
+        start_load.assert_not_called()
+        run_migration.assert_not_called()
+
+    def test_clm_plan_auto_renders_stop_and_copy_as_non_executable(self):
+        cfg = deepcopy(cli.DEFAULTS)
+        stdout = io.StringIO()
+        with patch("clm.cli.main.load_env", return_value=cfg), redirect_stdout(stdout):
+            rc = cli_main(["--env", "dummy.yaml", "plan", "--method", "auto"])
+
+        self.assertEqual(rc, 0)
+        out = stdout.getvalue()
+        self.assertIn("strategy: stop-and-copy", out)
+        self.assertIn("executable: false", out)
+        self.assertIn("warning: stop-and-copy execution is a strategy skeleton", out)
 
     def test_run_cli_blocks_unsupported_criu_custom_build_before_side_effects(self):
         cfg = deepcopy(cli.DEFAULTS)

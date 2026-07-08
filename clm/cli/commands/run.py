@@ -9,7 +9,12 @@ from collections.abc import Sequence
 
 def configure_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("-e", "--env", help="Pfad zur env.yaml", default=argparse.SUPPRESS)
-    parser.add_argument("--method", required=True, choices=["precopy", "postcopy"])
+    parser.add_argument(
+        "--method",
+        required=True,
+        choices=["auto", "stop-and-copy", "precopy", "postcopy"],
+        help="Ausfuehrbar: precopy, postcopy. auto/stop-and-copy sind plan-only und werden von clm run geblockt.",
+    )
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument(
         "--load",

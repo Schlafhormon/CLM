@@ -148,6 +148,13 @@ Edit `config/env.yaml` for your lab:
 clm preflight --env config/env.yaml
 ```
 
+For the conservative plan-only default:
+
+```bash
+clm plan --env config/env.yaml --method auto
+clm preflight --env config/env.yaml --method auto
+```
+
 For config parsing only:
 
 ```bash
@@ -155,7 +162,9 @@ clm preflight --env config/env.yaml --dry-run
 ```
 
 Preflight checks local tooling, host reachability, shared paths, remote repo
-state, and common runtime prerequisites.
+state, and common runtime prerequisites. `--method auto` and
+`--method stop-and-copy` are side-effect-free plan/preflight modes; they do not
+mean the legacy run path can execute stop-and-copy.
 
 ## Running Migrations
 
@@ -174,6 +183,11 @@ Run a post-copy batch:
 ```bash
 clm run --env config/env.yaml --method postcopy --repeats 10
 ```
+
+Executable `clm run` strategies are currently `precopy` and `postcopy`.
+`auto` resolves to the conservative `stop-and-copy` plan, so
+`clm run --method auto` fails fast with a clear diagnostic until a real
+stop-and-copy backend exists.
 
 Run selected legacy load profiles:
 

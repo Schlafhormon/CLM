@@ -243,6 +243,7 @@ class RunMigrationTests(unittest.TestCase):
 
     def test_external_run_baseline_does_not_emit_vip_ip_conntrack_or_arping(self):
         cfg = deepcopy(cli.DEFAULTS)
+        cfg["execution"]["deployment_mode"] = "legacy_repo"
         cfg["traffic"] = {"mode": "external"}
 
         captured = []
@@ -368,6 +369,7 @@ class RunMigrationTests(unittest.TestCase):
 
     def test_vip_run_baseline_keeps_legacy_vip_cleanup(self):
         cfg = deepcopy(cli.DEFAULTS)
+        cfg["execution"]["deployment_mode"] = "legacy_repo"
 
         captured = []
 
@@ -389,6 +391,7 @@ class RunMigrationTests(unittest.TestCase):
     def test_precopy_run_migration_exports_shared_image_mode_by_default(self):
         cfg = deepcopy(cli.DEFAULTS)
         cfg["repo_path"] = "~/CLM"
+        cfg["execution"]["deployment_mode"] = "legacy_repo"
         cfg["hosts"]["dest"]["user"] = "benke2"
 
         captured = {}
@@ -417,6 +420,7 @@ class RunMigrationTests(unittest.TestCase):
     def test_precopy_run_migration_exports_local_copy_override(self):
         cfg = deepcopy(cli.DEFAULTS)
         cfg["repo_path"] = "~/CLM"
+        cfg["execution"]["deployment_mode"] = "legacy_repo"
         cfg["hosts"]["dest"]["user"] = "benke2"
         cfg["precopy"]["image_mode"] = "local_copy"
 
@@ -445,6 +449,7 @@ class RunMigrationTests(unittest.TestCase):
     def test_postcopy_run_migration_uses_recommended_readiness_fallback_defaults(self):
         cfg = deepcopy(cli.DEFAULTS)
         cfg["repo_path"] = "~/CLM"
+        cfg["execution"]["deployment_mode"] = "legacy_repo"
         cfg["hosts"]["dest"]["user"] = "benke2"
         cfg["postcopy"].pop("readiness_stable_successes", None)
         cfg["postcopy"].pop("readiness_timeout_ms", None)
@@ -480,6 +485,7 @@ class RunMigrationTests(unittest.TestCase):
     def test_postcopy_run_migration_corrects_invalid_readiness_when_forwarding_enabled(self):
         cfg = deepcopy(cli.DEFAULTS)
         cfg["repo_path"] = "~/CLM"
+        cfg["execution"]["deployment_mode"] = "legacy_repo"
         cfg["hosts"]["dest"]["user"] = "benke2"
         cfg["postcopy"]["src_forwarding_enabled"] = 1
         cfg["postcopy"]["readiness_stable_successes"] = 0
@@ -679,6 +685,7 @@ class RunMigrationTests(unittest.TestCase):
     def test_reset_source_exports_configured_gunicorn_capacity(self):
         cfg = deepcopy(cli.DEFAULTS)
         cfg["repo_path"] = "~/CLM"
+        cfg["execution"]["deployment_mode"] = "legacy_repo"
         cfg["container"]["gunicorn"] = {"workers": 2, "threads": 8}
 
         captured = {}

@@ -13,6 +13,11 @@ from typing import Any
 
 DEFAULTS: dict[str, Any] = {
     "repo_path": "~/CLM",
+    "execution": {
+        "deployment_mode": "artifact_deploy",
+        "remote_temp_root": "/tmp",
+        "cleanup_temp_on_success": True,
+    },
     "hosts": {
         "monitor": {"host": "local", "ip": "192.168.13.20"},
         "source": {"host": "benke1", "ip": "192.168.13.10"},

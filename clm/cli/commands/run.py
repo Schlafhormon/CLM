@@ -28,6 +28,12 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-monitor", action="store_true")
     parser.add_argument("--no-migrate", action="store_true")
     parser.add_argument("--no-cleanup", action="store_true", help="Run-spezifische Checkpoint-Artefakte nach dem Lauf nicht loeschen")
+    parser.add_argument(
+        "--deployment-mode",
+        choices=["artifact_deploy", "legacy_repo"],
+        default=None,
+        help="Host-Deployment-Pfad fuer Skripte: artifact_deploy oder legacy_repo",
+    )
     parser.add_argument("--analyse", "--analyze", action="store_true", dest="analyse", help="Batch nach Run analysieren + Plots erzeugen")
     parser.add_argument(
         "--analysis-config",
@@ -39,6 +45,8 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
 def handle(args: argparse.Namespace, cfg: dict, *, env_path: str, argv: Sequence[str] | None = None) -> int:
     from clm import cli
 
+    if args.deployment_mode is not None:
+        cfg.setdefault("execution", {})["deployment_mode"] = args.deployment_mode
     raw_argv = sys.argv[1:] if argv is None else list(argv)
     return cli.run_cli(
         cfg,

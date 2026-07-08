@@ -119,6 +119,7 @@ class StrategyPlanAndAdapterTests(unittest.TestCase):
     def test_run_migration_reaches_legacy_strategy_adapter(self):
         cfg = deepcopy(cli.DEFAULTS)
         cfg["repo_path"] = "~/CLM"
+        cfg["execution"]["deployment_mode"] = "legacy_repo"
         cfg["hosts"]["dest"]["user"] = "benke2"
 
         captured = {}

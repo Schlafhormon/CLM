@@ -13,7 +13,13 @@ from pathlib import Path
 from typing import Any, Optional
 
 from clm.core.models import MigrationResult, PreflightResult
-from clm.host import CommandBuilder
+from clm.host import (
+    DEPLOYMENT_MODE_ARTIFACT,
+    CommandBuilder,
+    deploy_scripts,
+    deployment_mode_for,
+    migration_script_names,
+)
 from clm.migration.storage import transfer_plan_for
 from clm.migration.traffic import select_traffic_backend
 from clm.runtimes.base import RuntimeBackend, RuntimeInspection
@@ -106,9 +112,30 @@ class RuncBackend(RuntimeBackend):
             events_log=events_log,
         )
 
+        deployment = None
+        deploy_cleanup: dict[str, Any] | None = None
+        deploy_mode = deployment_mode_for(config)
+        if deploy_mode == DEPLOYMENT_MODE_ARTIFACT:
+            deployment = deploy_scripts(
+                src,
+                config,
+                script_names=migration_script_names(method),
+                run_id=run_id,
+                run_remote=legacy_cli.run_remote,
+            )
+            script = self.build_legacy_migration_script(
+                config,
+                method=method,
+                run_id=run_id,
+                events_log=events_log,
+                repo_path=deployment.repo_path,
+            )
+
         legacy_cli.ensure_dir(str(Path(migrate_log).parent))
         with open(migrate_log, "w", encoding="utf-8") as fp:
             result = legacy_cli.run_remote(src, script, check=False, stdout=fp, stderr=fp)
+        if deployment is not None and result.returncode == 0:
+            deploy_cleanup = deployment.cleanup_after_success()
 
         events = _read_events(events_log)
         traffic = _traffic_result_from_events(
@@ -137,13 +164,24 @@ class RuncBackend(RuntimeBackend):
                 "migrate_log": migrate_log,
                 "returncode": result.returncode,
                 "traffic_mode": traffic.get("mode"),
+                "deployment_mode": deploy_mode,
+                "deployment_workdir": deployment.workdir if deployment else None,
+                "deployment_cleanup_ok": deploy_cleanup.get("ok") if deploy_cleanup else None,
             },
             phases=phases,
             traffic=traffic,
             probe_readiness=probe_readiness,
         )
 
-    def build_legacy_migration_script(self, config: dict[str, Any], *, method: str, run_id: str, events_log: str) -> str:
+    def build_legacy_migration_script(
+        self,
+        config: dict[str, Any],
+        *,
+        method: str,
+        run_id: str,
+        events_log: str,
+        repo_path: str | None = None,
+    ) -> str:
         import clm.cli as legacy_cli
 
         cfg = config
@@ -165,7 +203,7 @@ class RuncBackend(RuntimeBackend):
         ]
 
         env_vars: dict[str, Any] = {
-            "REPO": legacy_cli.repo_path_remote(cfg),
+            "REPO": repo_path or legacy_cli.repo_path_remote(cfg),
             "RUN_ID": run_id,
             "MODE": "runc",
             "NAME": container["name"],

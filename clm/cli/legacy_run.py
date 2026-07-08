@@ -32,7 +32,22 @@ from clm.batching import (
     utc_now_iso as batch_now_iso,
 )
 from clm.core.defaults import DEFAULTS
-from clm.host import CommandBuilder, LocalExecutor, ProcessHandle, SshExecutor, render_env_exports, shell_quote
+from clm.host import (
+    DEPLOYMENT_MODE_ARTIFACT,
+    DEPLOYMENT_MODE_LEGACY_REPO,
+    CommandBuilder,
+    LocalExecutor,
+    ProcessHandle,
+    SshExecutor,
+    baseline_reset_script_names,
+    deploy_scripts,
+    deployment_mode_for,
+    migration_script_names,
+    preflight_tempdir_script,
+    render_env_exports,
+    shell_quote,
+    validate_local_scripts,
+)
 from clm.migration.storage import CleanupPolicy, artifact_paths_for
 
 try:
@@ -1213,6 +1228,18 @@ def reset_source(cfg: dict, *, output_tag: str = "baseline:source") -> None:
     src_ip = host_ip(cfg, "source")
     port = traffic_port_for(cfg)
 
+    deployment = None
+    repo = repo_path_remote(cfg)
+    if deployment_mode_for(cfg) == DEPLOYMENT_MODE_ARTIFACT:
+        deployment = deploy_scripts(
+            src,
+            cfg,
+            script_names=baseline_reset_script_names(),
+            run_id=f"baseline-{container['name']}",
+            run_remote=run_remote,
+        )
+        repo = deployment.repo_path
+
     env_vars = {
         "REPO": repo,
         "BUNDLE": container["bundle"],
@@ -1250,6 +1277,10 @@ def reset_source(cfg: dict, *, output_tag: str = "baseline:source") -> None:
         ]
     script = build_remote_script(env_vars, commands)
     _run_remote_streamed(src, script, check=True, tag=output_tag)
+    if deployment is not None:
+        info = deployment.cleanup_after_success()
+        if info.get("ok") is False:
+            log(f"{output_tag}: WARN temp deployment cleanup failed: {info.get('path')}")
 
 
 def cleanup_dest(cfg: dict, *, output_tag: str = "baseline:dest") -> None:
@@ -1577,6 +1608,7 @@ def preflight(cfg: dict, dry_run: bool = False, method: Optional[str] = None) ->
 
     if dry_run:
         print("Preflight (dry-run):")
+        print(f"- execution.deployment_mode: {deployment_mode_for(cfg)}")
         print(f"- env repo_path: {cfg['repo_path']}")
         print(f"- hosts: {cfg['hosts']}")
         print(f"- paths: {cfg['paths']}")
@@ -1615,20 +1647,35 @@ def preflight(cfg: dict, dry_run: bool = False, method: Optional[str] = None) ->
 
     runtime_type = runtime_type_for(cfg)
     use_vip = traffic_uses_vip(cfg)
+    deploy_mode = deployment_mode_for(cfg)
 
     repo_heads = {}
     repo_head_errors = {}
 
 
-    repo_local = repo_path_local(cfg)
-    add("monitor: repo vorhanden", os.path.isdir(repo_local), repo_local)
-    try:
-        head = _resolve_local_repo_git_head(repo_local)
-        repo_heads["monitor"] = head
-        add("monitor: repo git head", True, _short_git_head(head))
-    except Exception as e:
-        repo_head_errors["monitor"] = str(e)
-        add("monitor: repo git head", False, str(e))
+    add("execution: deployment mode", True, deploy_mode)
+    if deploy_mode == DEPLOYMENT_MODE_LEGACY_REPO:
+        repo_local = repo_path_local(cfg)
+        add("monitor: repo vorhanden", os.path.isdir(repo_local), repo_local)
+        try:
+            head = _resolve_local_repo_git_head(repo_local)
+            repo_heads["monitor"] = head
+            add("monitor: repo git head", True, _short_git_head(head))
+        except Exception as e:
+            repo_head_errors["monitor"] = str(e)
+            add("monitor: repo git head", False, str(e))
+    else:
+        script_names = set()
+        try:
+            script_names.update(migration_script_names(selected_strategy if selected_strategy in ("precopy", "postcopy") else "precopy"))
+            if selected_strategy not in ("precopy", "postcopy"):
+                script_names.update(migration_script_names("postcopy"))
+        except Exception:
+            script_names.update(migration_script_names("precopy"))
+            script_names.update(migration_script_names("postcopy"))
+        script_names.update(baseline_reset_script_names())
+        ok, detail = validate_local_scripts(cfg, sorted(script_names))
+        add("controller: deployment scripts available", ok, detail)
 
     share_root = cfg["paths"]["share_root"]
     logs_root = cfg["paths"]["logs_root"]
@@ -1653,8 +1700,6 @@ def preflight(cfg: dict, dry_run: bool = False, method: Optional[str] = None) ->
 
     for role in ("source", "dest"):
         host = host_alias(cfg, role)
-        repo = repo_path_remote_for_bash(cfg)
-        repo_exists = False
         try:
             run_remote(host, "true", check=True)
             add(f"{role}: ssh ok", True, host)
@@ -1663,25 +1708,34 @@ def preflight(cfg: dict, dry_run: bool = False, method: Optional[str] = None) ->
             add(f"{role}: ssh ok", False, str(e))
             continue
 
-        try:
-            repo_escaped = _bash_dquote_escape(repo)
-            run_remote(host, f'test -d "{repo_escaped}"', check=True)
-            repo_exists = True
-            add(f"{role}: repo vorhanden", True, repo)
-        except Exception as e:
-            repo_head_errors[role] = f"repo fehlt/nicht lesbar: {e}"
-            add(f"{role}: repo vorhanden", False, str(e))
-
-        if repo_exists:
+        if deploy_mode == DEPLOYMENT_MODE_LEGACY_REPO:
+            repo = repo_path_remote_for_bash(cfg)
+            repo_exists = False
             try:
-                head = _resolve_remote_repo_git_head(host, repo)
-                repo_heads[role] = head
-                add(f"{role}: repo git head", True, _short_git_head(head))
+                repo_escaped = _bash_dquote_escape(repo)
+                run_remote(host, f'test -d "{repo_escaped}"', check=True)
+                repo_exists = True
+                add(f"{role}: repo vorhanden", True, repo)
             except Exception as e:
-                repo_head_errors[role] = str(e)
-                add(f"{role}: repo git head", False, str(e))
+                repo_head_errors[role] = f"repo fehlt/nicht lesbar: {e}"
+                add(f"{role}: repo vorhanden", False, str(e))
+
+            if repo_exists:
+                try:
+                    head = _resolve_remote_repo_git_head(host, repo)
+                    repo_heads[role] = head
+                    add(f"{role}: repo git head", True, _short_git_head(head))
+                except Exception as e:
+                    repo_head_errors[role] = str(e)
+                    add(f"{role}: repo git head", False, str(e))
+            else:
+                add(f"{role}: repo git head", False, "repo nicht verfuegbar")
         else:
-            add(f"{role}: repo git head", False, "repo nicht verfuegbar")
+            try:
+                run_remote(host, preflight_tempdir_script(cfg), check=True)
+                add(f"{role}: deploy temp dir", True)
+            except Exception as e:
+                add(f"{role}: deploy temp dir", False, str(e))
 
         try:
             run_remote(host, f"mount | grep -q {shlex.quote(share_root)}", check=True)
@@ -1704,6 +1758,8 @@ def preflight(cfg: dict, dry_run: bool = False, method: Optional[str] = None) ->
 
 
         required_tools = ["jq", "ss", "curl", "ssh"]
+        if deploy_mode == DEPLOYMENT_MODE_ARTIFACT:
+            required_tools.extend(["bash", "base64", "mktemp", "chmod"])
         if runtime_type == "runc":
             required_tools.extend(["runc", "criu"])
         if use_vip:
@@ -1750,8 +1806,11 @@ def preflight(cfg: dict, dry_run: bool = False, method: Optional[str] = None) ->
         except Exception as e:
             add(f"{role}: criu check --all", True, f"WARN: {e}", warn=True)
 
-    in_sync, sync_detail = _repo_sync_check_result(repo_heads, repo_head_errors)
-    add("repo: git commit synchron (monitor/source/dest)", in_sync, sync_detail)
+    if deploy_mode == DEPLOYMENT_MODE_LEGACY_REPO:
+        in_sync, sync_detail = _repo_sync_check_result(repo_heads, repo_head_errors)
+        add("repo: git commit synchron (monitor/source/dest)", in_sync, sync_detail)
+    else:
+        add("repo: git commit synchron (monitor/source/dest)", True, "skipped for deployment_mode=artifact_deploy", warn=True)
 
 
     failures = [c for c in checks if not c["ok"] and not c["warn"]]

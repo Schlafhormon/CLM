@@ -14,9 +14,17 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Strategy/Method fuer die Capability-Pruefung; auto und stop-and-copy sind plan-only",
     )
+    parser.add_argument(
+        "--deployment-mode",
+        choices=["artifact_deploy", "legacy_repo"],
+        default=None,
+        help="Host-Deployment-Pfad fuer Skripte: artifact_deploy oder legacy_repo",
+    )
 
 
 def handle(args: argparse.Namespace, cfg: dict) -> int:
     from clm import cli
 
+    if args.deployment_mode is not None:
+        cfg.setdefault("execution", {})["deployment_mode"] = args.deployment_mode
     return cli.preflight(cfg, dry_run=args.dry_run, method=args.method)

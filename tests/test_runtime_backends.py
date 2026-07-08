@@ -59,6 +59,7 @@ class RuntimeBackendMigrationTests(unittest.TestCase):
     def test_runc_backend_adapts_legacy_precopy_script(self):
         cfg = deepcopy(cli.DEFAULTS)
         cfg["repo_path"] = "~/CLM"
+        cfg["execution"]["deployment_mode"] = "legacy_repo"
         cfg["hosts"]["dest"]["user"] = "benke2"
 
         captured = {}
@@ -91,6 +92,7 @@ class RuntimeBackendMigrationTests(unittest.TestCase):
     def test_runc_backend_runtime_failure_stays_failed_without_restore_done(self):
         cfg = deepcopy(cli.DEFAULTS)
         cfg["repo_path"] = "~/CLM"
+        cfg["execution"]["deployment_mode"] = "legacy_repo"
 
         def fake_run_remote(host, script, **kwargs):
             return SimpleNamespace(returncode=4)
@@ -115,6 +117,7 @@ class RuntimeBackendMigrationTests(unittest.TestCase):
     def test_runc_backend_restore_done_traffic_verify_failure_is_structured_partial(self):
         cfg = deepcopy(cli.DEFAULTS)
         cfg["repo_path"] = "~/CLM"
+        cfg["execution"]["deployment_mode"] = "legacy_repo"
         cfg["traffic"] = {
             "mode": "command",
             "hooks": {"verify": ["curl", "-fsS", "http://service/health"]},
@@ -157,6 +160,7 @@ class RuntimeBackendMigrationTests(unittest.TestCase):
     def test_runc_backend_required_postcopy_readiness_failure_stays_failed(self):
         cfg = deepcopy(cli.DEFAULTS)
         cfg["repo_path"] = "~/CLM"
+        cfg["execution"]["deployment_mode"] = "legacy_repo"
 
         def fake_run_remote(host, script, **kwargs):
             Path(events_log).write_text(
@@ -189,6 +193,40 @@ class RuntimeBackendMigrationTests(unittest.TestCase):
         self.assertEqual(result.phases["restore"]["ok"], True)
         self.assertTrue(result.probe_readiness["required"])
         self.assertFalse(result.probe_readiness["ok"])
+
+    def test_runc_backend_default_deploys_scripts_to_remote_tempdir(self):
+        cfg = deepcopy(cli.DEFAULTS)
+        cfg["hosts"]["dest"]["user"] = "benke2"
+
+        calls = []
+
+        def fake_run_remote(host, script, **kwargs):
+            calls.append((host, script, kwargs))
+            if kwargs.get("capture") and "mktemp -d" in script:
+                return SimpleNamespace(returncode=0, stdout="/tmp/clm-20260325_120000.abcd\n", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            migrate_log = Path(tmp) / "migrate" / "precopy.log"
+            with patch("clm.cli.run_remote", side_effect=fake_run_remote):
+                result = RuncBackend().migrate(
+                    cfg,
+                    method="precopy",
+                    run_id="20260325_120000",
+                    events_log="/mnt/criu/logs/mon-20260325_120000-events.ndjson",
+                    migrate_log=str(migrate_log),
+                )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.artifacts["deployment_mode"], "artifact_deploy")
+        self.assertEqual(result.artifacts["deployment_workdir"], "/tmp/clm-20260325_120000.abcd")
+        self.assertTrue(result.artifacts["deployment_cleanup_ok"])
+        combined = "\n".join(call[1] for call in calls)
+        self.assertIn("base64 -d > \"$file\"", combined)
+        self.assertIn("file=/tmp/clm-20260325_120000.abcd/scripts/migrate_precopy.sh", combined)
+        self.assertIn("file=/tmp/clm-20260325_120000.abcd/scripts/migrate_precopy_vip_cutover.sh", combined)
+        self.assertIn("export REPO=/tmp/clm-20260325_120000.abcd", combined)
+        self.assertIn("rm -rf -- \"$dir\"", combined)
 
     def test_runc_backend_exports_command_traffic_hooks(self):
         cfg = deepcopy(cli.DEFAULTS)

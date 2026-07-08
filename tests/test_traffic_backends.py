@@ -120,6 +120,27 @@ class CommandTrafficBackendTests(unittest.TestCase):
         self.assertTrue(backend.switch().ok)
         self.assertEqual(calls[0], ["bash", "-lc", "lbctl activate dest"])
 
+    def test_script_env_serializes_hooks_for_legacy_shell_boundary(self):
+        backend = CommandTrafficBackend(
+            TrafficPlan(
+                mode="command",
+                hooks={
+                    "switch": ["lbctl", "activate dest"],
+                    "verify": {"command": "curl -fsS \"$HEALTH_URL\"", "allow_shell": True},
+                },
+            )
+        )
+
+        self.assertTrue(backend.preflight().ok)
+        self.assertEqual(
+            backend.script_env(),
+            {
+                "TRAFFIC_MODE": "command",
+                "TRAFFIC_SWITCH_CMD": "lbctl 'activate dest'",
+                "TRAFFIC_VERIFY_CMD": 'curl -fsS "$HEALTH_URL"',
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -63,7 +63,24 @@ LAZY_PORT="${LAZY_PORT:-27027}"
 SRC_LAZY_IP="${SRC_LAZY_IP:-192.168.13.10}"
 SRC_LAZY_ADDR="${SRC_LAZY_ADDR:-${SRC_LAZY_IP}:${LAZY_PORT}}"
 
-SSH="ssh -n -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new ${DST_USER}@${DST_HOST}"
+SSH_CMD=(
+  ssh
+  -n
+  -o BatchMode=yes
+  -o ConnectTimeout=5
+  -o StrictHostKeyChecking=accept-new
+  "${DST_USER}@${DST_HOST}"
+)
+SSH_STDIN_CMD=(
+  ssh
+  -o BatchMode=yes
+  -o ConnectTimeout=5
+  -o StrictHostKeyChecking=accept-new
+  "${DST_USER}@${DST_HOST}"
+)
+read -r -a RUNC_BIN_ARGV <<< "$RUNC_BIN"
+read -r -a RUNC_ROOT_ARGV <<< "$RUNC_ROOT"
+read -r -a RUNC_CP_FLAGS_ARGV <<< "$RUNC_CP_FLAGS"
 
 RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"; export RUN_ID
 LOG_DIR="${LOG_DIR:-$SRC_NFS_ROOT/logs}"
@@ -73,7 +90,29 @@ mkdir -p "$LOG_DIR"
 ts(){ date +"%Y-%m-%dT%H:%M:%S.%3NZ"; }
 ms(){ date +%s%3N; }
 log(){ [ "$VERBOSE" = "1" ] && echo "[$(ts)] $*"; }
-run(){ [ "$DRY_RUN" = "1" ] && { echo "DRY: $*"; return 0; }; eval "$@"; }
+run_cmd(){
+  if [ "$DRY_RUN" = "1" ]; then
+    printf 'DRY:'
+    printf ' %q' "$@"
+    printf '\n'
+    return 0
+  fi
+  "$@"
+}
+run_ssh(){
+  local remote_command="$1"
+  run_cmd "${SSH_CMD[@]}" "$remote_command"
+}
+# TRAFFIC_*_CMD is a legacy env contract: command hooks are operator-owned
+# shell strings. Keep shell execution isolated to this named hook boundary.
+run_operator_shell_hook(){
+  local action="$1" command="$2"
+  if [ "$DRY_RUN" = "1" ]; then
+    printf 'DRY: traffic_%s hook via bash -lc: %q\n' "$action" "$command"
+    return 0
+  fi
+  bash -lc "$command"
+}
 fail(){ echo "ERROR: $*" >&2; exit 1; }
 json_escape(){ printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 emit_event(){
@@ -90,7 +129,7 @@ emit_event_remote(){
   local json='{"ts_unix_ms":'\"$ts\"',"event":"'$(json_escape "$name")'","clock_domain":"dest"'
   while [ $# -gt 0 ]; do kv="$1"; shift; json="$json"',"'"${kv%%=*}"'":"'"$(json_escape "${kv#*=}")"'"'; done
   json="$json"'}'
-  $SSH "printf '%s\n' $'${json//\'/\'\\\'\'}' >> '$EVENTS_LOG'"
+  "${SSH_CMD[@]}" "printf '%s\n' $'${json//\'/\'\\\'\'}' >> '$EVENTS_LOG'"
 }
 
 shell_escape_sq(){
@@ -147,7 +186,7 @@ remote_http_probe(){
   local esc_url out rc payload marker metrics status total_s
   esc_url="$(shell_escape_sq "$url")"
   marker="__CLM__"
-  out="$($SSH "out=\$(curl -sS -o /dev/null -w '${marker}%{http_code}|%{time_total}' --max-time '$timeout_s' '$esc_url' 2>&1); rc=\$?; printf '%s|%s\n' \"\$rc\" \"\$out\"" 2>/dev/null)" || true
+  out="$("${SSH_CMD[@]}" "out=\$(curl -sS -o /dev/null -w '${marker}%{http_code}|%{time_total}' --max-time '$timeout_s' '$esc_url' 2>&1); rc=\$?; printf '%s|%s\n' \"\$rc\" \"\$out\"" 2>/dev/null)" || true
   rc="${out%%|*}"
   payload="${out#*|}"
   if ! [[ "$rc" =~ ^[0-9]+$ ]]; then
@@ -246,7 +285,7 @@ elapsed_ms=\$((\$(date +%s%3N) - start_ms))
 printf 'DONE|%s|%s|%s|%s|%s|%s\n' "\$total" "\$failures" "\$budget_hit" "\$elapsed_ms" "\$completed_rounds" "\$rounds"
 EOF
 )"
-  $SSH "bash -lc '$(shell_escape_sq "$remote_script")'"
+  printf '%s\n' "$remote_script" | "${SSH_STDIN_CMD[@]}" "bash -s"
 }
 
 wait_for_postcopy_readiness(){
@@ -387,7 +426,15 @@ ckpt_start_async(){
   local final_dir="$1"; shift
   mkdir -p "$final_dir" "$final_dir/work"
 
-  nohup bash -c "setsid $* >'$final_dir/ckpt.out' 2>&1" &
+  if [ "$DRY_RUN" = "1" ]; then
+    printf 'DRY: nohup setsid'
+    printf ' %q' "$@"
+    printf ' >%q 2>&1 &\n' "$final_dir/ckpt.out"
+    echo 0 > "$final_dir/ckpt.pid"
+    CKPT_PID_FILE="$final_dir/ckpt.pid"
+    return 0
+  fi
+  nohup setsid "$@" >"$final_dir/ckpt.out" 2>&1 &
   echo $! > "$final_dir/ckpt.pid"
   CKPT_PID_FILE="$final_dir/ckpt.pid"
 }
@@ -420,21 +467,21 @@ wait_inventory_on_dst(){
   local step_ms=200
   local waited=0
   while [ "$waited" -lt "$max_ms" ]; do
-    if $SSH "[ -s '$dst/final/inventory.img' ]"; then return 0; fi
+    if "${SSH_CMD[@]}" "[ -s '$dst/final/inventory.img' ]"; then return 0; fi
     sleep 0.2
     waited=$((waited + step_ms))
   done
   echo "=== Ziel: final/work/criu.log ===" >&2
-  $SSH "tail -n 80 '$dst/final/work/criu.log' 2>/dev/null || true" || true
+  "${SSH_CMD[@]}" "tail -n 80 '$dst/final/work/criu.log' 2>/dev/null || true" || true
   return 1
 }
 
 ipt(){ sudo iptables "$@"; }
-ipt_dst(){ $SSH "sudo iptables $*"; }
-vip_add_src(){ run "sudo ip addr add ${VIP_ADDR}${VIP_CIDR} dev ${VIP_IF_SRC} || true"; }
-vip_del_src(){ run "sudo ip addr del ${VIP_ADDR}${VIP_CIDR} dev ${VIP_IF_SRC} || true"; }
-vip_add_dst(){ run "$SSH \"sudo ip addr add ${VIP_ADDR}${VIP_CIDR} dev ${VIP_IF_DST} || true\""; }
-vip_del_dst(){ run "$SSH \"sudo ip addr del ${VIP_ADDR}${VIP_CIDR} dev ${VIP_IF_DST} || true\""; }
+ipt_dst(){ "${SSH_CMD[@]}" "sudo iptables $*"; }
+vip_add_src(){ run_cmd sudo ip addr add "${VIP_ADDR}${VIP_CIDR}" dev "$VIP_IF_SRC" || true; }
+vip_del_src(){ run_cmd sudo ip addr del "${VIP_ADDR}${VIP_CIDR}" dev "$VIP_IF_SRC" || true; }
+vip_add_dst(){ run_ssh "sudo ip addr add '$(shell_escape_sq "${VIP_ADDR}${VIP_CIDR}")' dev '$(shell_escape_sq "$VIP_IF_DST")' || true"; }
+vip_del_dst(){ run_ssh "sudo ip addr del '$(shell_escape_sq "${VIP_ADDR}${VIP_CIDR}")' dev '$(shell_escape_sq "$VIP_IF_DST")' || true"; }
 garp_interval_s(){
   awk -v ms="$VIP_GARP_INTERVAL_MS" 'BEGIN { if (ms <= 0) ms = 1; printf "%.3f", ms / 1000.0 }'
 }
@@ -457,9 +504,9 @@ vip_garp_repeat_mode(){
   i=1
   while [ "$i" -le "$count" ]; do
 
-    run "$SSH \"sudo arping -c 1 -${mode_flag} -I ${VIP_IF_DST} ${VIP_ADDR} || true\""
+    run_ssh "sudo arping -c 1 -${mode_flag} -I '$(shell_escape_sq "$VIP_IF_DST")' '$(shell_escape_sq "$VIP_ADDR")' || true"
     if [ "$i" -lt "$count" ]; then
-      run "sleep ${interval_s}"
+      run_cmd sleep "$interval_s"
     fi
     i=$((i + 1))
   done
@@ -487,8 +534,8 @@ vip_garp_dst(){
 nat_clear_src(){ ipt -t nat -D PREROUTING -d "$VIP_ADDR" -p tcp --dport "$VIP_PORT" -j DNAT --to-destination "${CONTAINER_IP_DST}:${VIP_PORT}" 2>/dev/null || true; ipt -t nat -D POSTROUTING -p tcp -d "$CONTAINER_IP_DST" --dport "$VIP_PORT" -j MASQUERADE 2>/dev/null || true; }
 nat_clear_dst(){ ipt_dst -t nat -D PREROUTING -d "$VIP_ADDR" -p tcp --dport "$VIP_PORT" -j DNAT --to-destination "${CONTAINER_IP_DST}:${VIP_PORT}" 2>/dev/null || true; ipt_dst -t nat -D POSTROUTING -p tcp -d "$CONTAINER_IP_DST" --dport "$VIP_PORT" -j MASQUERADE 2>/dev/null || true; }
 nat_set_dst(){ ipt_dst -t nat -A PREROUTING -d "$VIP_ADDR" -p tcp --dport "$VIP_PORT" -j DNAT --to-destination "${CONTAINER_IP_DST}:${VIP_PORT}"; ipt_dst -t nat -A POSTROUTING -p tcp -d "$CONTAINER_IP_DST" --dport "$VIP_PORT" -j MASQUERADE; }
-conntrack_clear_dst(){ run "$SSH \"sudo conntrack -D -d ${VIP_ADDR} || true\""; }
-conntrack_clear_src(){ run "sudo conntrack -D -d ${VIP_ADDR} || true"; }
+conntrack_clear_dst(){ run_ssh "sudo conntrack -D -d '$(shell_escape_sq "$VIP_ADDR")' || true"; }
+conntrack_clear_src(){ run_cmd sudo conntrack -D -d "$VIP_ADDR" || true; }
 src_forward_clear(){
   [ "$TRAFFIC_MODE" = "vip" ] || return 0
   local target_host="$POSTCOPY_SRC_FORWARD_TARGET_HOST"
@@ -567,7 +614,7 @@ traffic_hook_run(){
   emit_event "traffic_${action}_start" mode="$TRAFFIC_MODE"
   start="$(ms)"
   log "Traffic ${action}: command hook"
-  run "$cmd"
+  run_operator_shell_hook "$action" "$cmd"
   end="$(ms)"
   emit_event "traffic_${action}_done" mode="$TRAFFIC_MODE" dur_ms=$((end - start))
 }
@@ -655,7 +702,7 @@ cleanup(){
   local rc=$?
 
   if [ -n "$LAZY_PID_FILE" ]; then
-    $SSH "if [ -f '$LAZY_PID_FILE' ]; then sudo kill \$(cat '$LAZY_PID_FILE') 2>/dev/null || true; fi" || true
+    "${SSH_CMD[@]}" "if [ -f '$LAZY_PID_FILE' ]; then sudo kill \$(cat '$LAZY_PID_FILE') 2>/dev/null || true; fi" || true
     emit_event_remote lazy_daemon_stop reason=cleanup_rc_${rc} || true
   fi
   if [ "$SRC_FORWARD_ACTIVE" = "1" ]; then
@@ -701,34 +748,35 @@ command -v criu >/dev/null || fail "criu fehlt auf Quelle"
 command -v runc >/dev/null || fail "runc fehlt auf Quelle"
 mount | grep -q "$SRC_NFS_ROOT" || fail "NFS $SRC_NFS_ROOT nicht gemountet"
 [[ -d "$RUNC_BUNDLE_SRC" ]] || fail "runc-Bundle fehlt Quelle: $RUNC_BUNDLE_SRC"
-$SSH "command -v criu >/dev/null" || fail "criu fehlt Ziel"
-$SSH "command -v runc >/dev/null" || fail "runc fehlt Ziel"
-$SSH "[ -d '$RUNC_BUNDLE_DST' ]" || fail "runc-Bundle fehlt Ziel: $RUNC_BUNDLE_DST"
-$SSH "sudo mkdir -p '$DST_LOCAL_ROOT' '$IMAGES_BASE_DST'"
+"${SSH_CMD[@]}" "command -v criu >/dev/null" || fail "criu fehlt Ziel"
+"${SSH_CMD[@]}" "command -v runc >/dev/null" || fail "runc fehlt Ziel"
+"${SSH_CMD[@]}" "[ -d '$RUNC_BUNDLE_DST' ]" || fail "runc-Bundle fehlt Ziel: $RUNC_BUNDLE_DST"
+"${SSH_CMD[@]}" "sudo mkdir -p '$DST_LOCAL_ROOT' '$IMAGES_BASE_DST'"
 
 log "Prüfe Containerstatus Quelle…"
-if ! $RUNC_BIN $RUNC_ROOT state "$NAME" >/dev/null 2>&1; then
+if ! "${RUNC_BIN_ARGV[@]}" "${RUNC_ROOT_ARGV[@]}" state "$NAME" >/dev/null 2>&1; then
   fail "Container '$NAME' existiert nicht."
 fi
 
 log "Prüfe Lazy-Port frei (Quelle) …"
 ss -lnt | grep -q ":${LAZY_PORT}\\b" && fail "LAZY_PORT ${LAZY_PORT} belegt"
 log "Portkollisionen Ziel (Info) …"
-$SSH "ss -tulpn | grep -E ':${TRAFFIC_PORT}\\b' || true"
+"${SSH_CMD[@]}" "ss -tulpn | grep -E ':${TRAFFIC_PORT}\\b' || true"
 
 final_dir="$IMAGES_BASE_SRC/final"
 emit_event checkpoint_start lazy_addr="$SRC_LAZY_ADDR"
 log "Checkpoint (Post-Copy) + Page-Server auf Quelle START (async)…"
-EXTRA=""; [ "$TCP_EST" = "1" ] && EXTRA="--tcp-established"
+TCP_EST_ARGS=()
+[ "$TCP_EST" = "1" ] && TCP_EST_ARGS=(--tcp-established)
 t_dump_start=$(ms); t_dump_end=0
 
-ckpt_start_async "$final_dir" "$RUNC_BIN $RUNC_ROOT checkpoint \"$NAME\" \
-  --image-path \"$final_dir\" \
-  --work-path  \"$final_dir/work\" \
-  $EXTRA \
+ckpt_start_async "$final_dir" "${RUNC_BIN_ARGV[@]}" "${RUNC_ROOT_ARGV[@]}" checkpoint "$NAME" \
+  --image-path "$final_dir" \
+  --work-path  "$final_dir/work" \
+  "${TCP_EST_ARGS[@]}" \
   --lazy-pages \
-  --page-server \"$SRC_LAZY_ADDR\" \
-  $RUNC_CP_FLAGS"
+  --page-server "$SRC_LAZY_ADDR" \
+  "${RUNC_CP_FLAGS_ARGV[@]}"
 
 if ckpt_wait_files "$final_dir"; then
   log "Checkpoint/Page-Server signalisiert Bereitschaft (inventory.img oder criu.log)."
@@ -745,15 +793,15 @@ if [ ! -s "$IMAGES_BASE_SRC/final/inventory.img" ]; then
   ckpt_wait_files "$IMAGES_BASE_SRC/final" || fail "inventory.img auf Quelle fehlt weiterhin."
 fi
 
-run "$SSH \"sudo rm -rf '$IMAGES_BASE_DST' && sudo mkdir -p '$IMAGES_BASE_DST'\""
-run "$SSH \"sudo cp -a --no-preserve=mode,ownership,timestamps '${REMOTE_NFS_ROOT}/runc/$NAME/$CP_NAME/.' '$IMAGES_BASE_DST/'\""
+run_ssh "sudo rm -rf '$IMAGES_BASE_DST' && sudo mkdir -p '$IMAGES_BASE_DST'"
+run_ssh "sudo cp -a --no-preserve=mode,ownership,timestamps '${REMOTE_NFS_ROOT}/runc/$NAME/$CP_NAME/.' '$IMAGES_BASE_DST/'"
 
 wait_inventory_on_dst "$IMAGES_BASE_DST" || fail "inventory.img am Ziel fehlt nach Copy."
 
 SRC_CNT=$(sudo find "$IMAGES_BASE_SRC" -type f 2>/dev/null | wc -l || echo 0)
 SRC_SUM=$(sudo du -sb "$IMAGES_BASE_SRC" 2>/dev/null | awk '{print $1}' || echo 0)
-DST_CNT=$($SSH "find '$IMAGES_BASE_DST' -type f 2>/dev/null | wc -l" || echo 0)
-DST_SUM=$($SSH "du -sb '$IMAGES_BASE_DST' 2>/dev/null | awk '{print \$1}'" || echo 0)
+DST_CNT=$("${SSH_CMD[@]}" "find '$IMAGES_BASE_DST' -type f 2>/dev/null | wc -l" || echo 0)
+DST_SUM=$("${SSH_CMD[@]}" "du -sb '$IMAGES_BASE_DST' 2>/dev/null | awk '{print \$1}'" || echo 0)
 if [ "$SRC_CNT" != "$DST_CNT" ] || [ "$SRC_SUM" != "$DST_SUM" ]; then
 
   log "WARN: Transfer-Mismatch möglich (laufender Dump/Dateiwachstum). src(${SRC_CNT}/${SRC_SUM}) vs dst(${DST_CNT}/${DST_SUM})"
@@ -767,29 +815,31 @@ traffic_prepare
 
 emit_event_remote lazy_daemon_start addr="$SRC_LAZY_IP" port="$LAZY_PORT"
 LAZY_LOG="$IMAGES_BASE_DST/lazy-pages.log"; LAZY_PID_FILE="$IMAGES_BASE_DST/lazy-pages.pid"
-run "$SSH \"sudo mkdir -p '$IMAGES_BASE_DST/final/work'\""
-run "$SSH \"sudo bash -c 'nohup criu lazy-pages \
+run_ssh "sudo mkdir -p '$IMAGES_BASE_DST/final/work'"
+run_ssh "sudo sh -c 'nohup criu lazy-pages \
   --images-dir \\\"$IMAGES_BASE_DST/final\\\" \
   --work-dir  \\\"$IMAGES_BASE_DST/final/work\\\" \
   --page-server --address $SRC_LAZY_IP --port $LAZY_PORT \
-  --lazy-pages >\\\"$LAZY_LOG\\\" 2>&1 & echo \\$! >\\\"$LAZY_PID_FILE\\\"'\""
+  --lazy-pages >\\\"$LAZY_LOG\\\" 2>&1 & echo \\$! >\\\"$LAZY_PID_FILE\\\"'"
 
-run "$SSH \"pgrep -a criu | grep lazy-pages || true\""
-run "$SSH \"test -S '$IMAGES_BASE_DST/final/work/lazy-pages.socket' || (echo 'WARN: lazy-pages.socket fehlt (noch)' >&2)\""
+run_ssh "pgrep -a criu | grep lazy-pages || true"
+run_ssh "test -S '$IMAGES_BASE_DST/final/work/lazy-pages.socket' || (echo 'WARN: lazy-pages.socket fehlt (noch)' >&2)"
 
 emit_event restore_start target=$DST_HOST lazy=1
 emit_event_remote restore_start target=$DST_HOST lazy=1
 t_restore_start=$(ms)
-run "$SSH \"sudo runc $RUNC_ROOT delete -f '$NAME' 2>/dev/null || true\""
-run "$SSH \"sudo runc $RUNC_ROOT restore \
+tcp_flag=""
+[ "$TCP_EST" = "1" ] && tcp_flag="--tcp-established"
+run_ssh "sudo runc $RUNC_ROOT delete -f '$NAME' 2>/dev/null || true"
+run_ssh "sudo runc $RUNC_ROOT restore \
   $RUNC_RUN_FLAGS \
   --bundle '$RUNC_BUNDLE_DST' \
   --image-path '$IMAGES_BASE_DST/final' \
   --work-path  '$IMAGES_BASE_DST/final/work' \
-  $([ \\\"$TCP_EST\\\" = \\\"1\\\" ] && echo --tcp-established) \
+  $tcp_flag \
   --lazy-pages \
   $RUNC_RESTORE_FLAGS \
-  '$NAME'\""
+  '$NAME'"
 
 t_restore_end=$(ms)
 emit_event_remote restore_done target=$DST_HOST
@@ -822,13 +872,13 @@ log "Warte auf HEALTH OK am Ziel: $HEALTH_URL_DST"
 t_up=0
 emit_event health_wait_start target=$DST_HOST url="$HEALTH_URL_DST"
 for i in $(seq 1 120); do
-  code=$($SSH "curl -sS -o /dev/null -w '%{http_code}' --max-time 2 '$HEALTH_URL_DST'") || code=000
+  code=$("${SSH_CMD[@]}" "curl -sS -o /dev/null -w '%{http_code}' --max-time 2 '$HEALTH_URL_DST'") || code=000
   if [[ "$code" = "200" ]]; then t_up=$(ms); emit_event health_ok target=$DST_HOST; log "Health OK nach $((t_up - t_restore_start)) ms seit Restore-Start"; break; fi
   sleep 0.5
 done
 [[ "$t_up" -gt 0 ]] || fail "Health wurde auf benke2 nicht OK"
 
-run "$SSH \"if [ -f '$LAZY_PID_FILE' ]; then sudo kill \\\$(cat '$LAZY_PID_FILE') 2>/dev/null || true; fi\""
+run_ssh "if [ -f '$LAZY_PID_FILE' ]; then sudo kill \$(cat '$LAZY_PID_FILE') 2>/dev/null || true; fi"
 emit_event_remote lazy_daemon_stop reason=health_ok
 
 summary_fields=(

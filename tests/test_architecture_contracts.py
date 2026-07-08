@@ -102,6 +102,36 @@ def test_migration_scripts_keep_external_and_command_traffic_branches_non_vip():
                 assert token not in body, f"{path.relative_to(REPO_ROOT)} non-vip branch contains {token}"
 
 
+def test_migration_scripts_do_not_eval_internal_runtime_commands():
+    forbidden_patterns = (
+        r"\beval\b",
+        r"\brun\s*\(\)",
+        r"\brun\s+['\"]",
+    )
+
+    for path in MIGRATION_SCRIPTS:
+        script = path.read_text(encoding="utf-8")
+        for pattern in forbidden_patterns:
+            assert not re.search(pattern, script), f"{path.relative_to(REPO_ROOT)} contains forbidden {pattern}"
+
+        assert "run_cmd()" in script
+        assert "run_ssh()" in script
+        assert "run_operator_shell_hook()" in script
+        assert "run_operator_shell_hook \"$action\" \"$cmd\"" in script
+
+
+def test_migration_scripts_limit_bash_lc_to_operator_traffic_hook_boundary():
+    for path in MIGRATION_SCRIPTS:
+        script = path.read_text(encoding="utf-8")
+        hook_body = _bash_function_body(script, "run_operator_shell_hook")
+        assert 'bash -lc "$command"' in hook_body
+
+        script_without_hook = script.replace(hook_body, "")
+        assert "bash -lc" not in script_without_hook, (
+            f"{path.relative_to(REPO_ROOT)} uses bash -lc outside run_operator_shell_hook"
+        )
+
+
 def test_cli_package_facade_stays_small_compatibility_layer():
     path = REPO_ROOT / "clm" / "cli" / "__init__.py"
     text = path.read_text(encoding="utf-8")
@@ -120,3 +150,9 @@ def test_legacy_defaults_are_owned_by_core_not_legacy_runner():
     assert "from clm.core.defaults import DEFAULTS" in legacy_text
     assert "DEFAULTS =" not in legacy_text
     assert "DEFAULTS:" in defaults_text
+
+
+def _bash_function_body(script: str, function_name: str) -> str:
+    match = re.search(rf"(?ms)^{re.escape(function_name)}\(\)\s*\{{(?P<body>.*?)^}}", script)
+    assert match is not None, f"missing bash function {function_name}"
+    return match.group("body")

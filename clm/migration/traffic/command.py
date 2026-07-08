@@ -63,6 +63,12 @@ class CommandTrafficBackend(TrafficBackend):
         return self._run_hook("rollback")
 
     def script_env(self, config: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
+        """Render hooks for the legacy migration scripts.
+
+        The shell scripts receive hooks through single environment variables,
+        so argv hooks are serialized with ``shlex.join`` and executed at the
+        explicitly named ``run_operator_shell_hook`` boundary.
+        """
         env: dict[str, Any] = {"TRAFFIC_MODE": self.mode}
         for action in self.actions:
             command = self._normalize_hook(action)

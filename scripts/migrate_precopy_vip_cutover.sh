@@ -59,12 +59,46 @@ EVENTS_LOG="${EVENTS_LOG:-$LOG_DIR/mon-${RUN_ID}-events.ndjson}"
 mkdir -p "$LOG_DIR"
 
 SSH_CONTROL_PATH="${SSH_CONTROL_PATH:-/tmp/clm-ssh-${RUN_ID}.sock}"
-SSH="ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -o ControlMaster=auto -o ControlPersist=60 -o ControlPath=${SSH_CONTROL_PATH} ${DST_USER}@${DST_HOST}"
+SSH_CMD=(
+  ssh
+  -o BatchMode=yes
+  -o ConnectTimeout=5
+  -o StrictHostKeyChecking=accept-new
+  -o ControlMaster=auto
+  -o ControlPersist=60
+  -o "ControlPath=${SSH_CONTROL_PATH}"
+  "${DST_USER}@${DST_HOST}"
+)
+read -r -a RUNC_BIN_ARGV <<< "$RUNC_BIN"
+read -r -a RUNC_ROOT_ARGV <<< "$RUNC_ROOT"
+read -r -a RUNC_CP_FLAGS_ARGV <<< "$RUNC_CP_FLAGS"
 
 ts() { date +"%Y-%m-%dT%H:%M:%S.%3NZ"; }
 ms() { date +%s%3N; }
 log() { [ "$VERBOSE" = "1" ] && echo "[$(ts)] $*"; }
-run() { [ "$DRY_RUN" = "1" ] && { echo "DRY: $*"; return 0; } ; eval "$@"; }
+run_cmd() {
+  if [ "$DRY_RUN" = "1" ]; then
+    printf 'DRY:'
+    printf ' %q' "$@"
+    printf '\n'
+    return 0
+  fi
+  "$@"
+}
+run_ssh() {
+  local remote_command="$1"
+  run_cmd "${SSH_CMD[@]}" "$remote_command"
+}
+# TRAFFIC_*_CMD is a legacy env contract: command hooks are operator-owned
+# shell strings. Keep shell execution isolated to this named hook boundary.
+run_operator_shell_hook() {
+  local action="$1" command="$2"
+  if [ "$DRY_RUN" = "1" ]; then
+    printf 'DRY: traffic_%s hook via bash -lc: %q\n' "$action" "$command"
+    return 0
+  fi
+  bash -lc "$command"
+}
 fail() { echo "ERROR: $*" >&2; exit 1; }
 
 json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
@@ -95,7 +129,7 @@ emit_event_remote() {
     json="$json"',"'"$(json_escape "$key")"'":"'"$(json_escape "$val")"'"'
   done
   json="$json"'}'
-  $SSH "ts=\$(date +%s%3N); cat >> '$EVENTS_LOG' <<EOF
+  "${SSH_CMD[@]}" "ts=\$(date +%s%3N); cat >> '$EVENTS_LOG' <<EOF
 $json
 EOF"
 }
@@ -147,7 +181,7 @@ EOF
     echo "DRY: restore_on_dst_precopy via ssh stdin"
     return 0
   fi
-  printf '%s\n' "$remote_script" | $SSH "bash -s"
+  printf '%s\n' "$remote_script" | "${SSH_CMD[@]}" "bash -s"
 }
 
 cleanup_ssh_master() {
@@ -158,12 +192,12 @@ trap 'emit_event error msg="script_aborted" step="trap_exit"; exit 1' INT TERM
 trap 'cleanup_ssh_master' EXIT
 
 ipt() { sudo iptables "$@"; }
-ipt_dst() { $SSH "sudo iptables $*"; }
+ipt_dst() { "${SSH_CMD[@]}" "sudo iptables $*"; }
 
-vip_add_src() { run "sudo ip addr add ${VIP_ADDR}${VIP_CIDR} dev ${VIP_IF_SRC} || true"; }
-vip_del_src() { run "sudo ip addr del ${VIP_ADDR}${VIP_CIDR} dev ${VIP_IF_SRC} || true"; }
-vip_add_dst() { run "$SSH \"sudo ip addr add ${VIP_ADDR}${VIP_CIDR} dev ${VIP_IF_DST} || true\""; }
-vip_del_dst() { run "$SSH \"sudo ip addr del ${VIP_ADDR}${VIP_CIDR} dev ${VIP_IF_DST} || true\""; }
+vip_add_src() { run_cmd sudo ip addr add "${VIP_ADDR}${VIP_CIDR}" dev "$VIP_IF_SRC" || true; }
+vip_del_src() { run_cmd sudo ip addr del "${VIP_ADDR}${VIP_CIDR}" dev "$VIP_IF_SRC" || true; }
+vip_add_dst() { run_ssh "sudo ip addr add '$(shell_escape_sq "${VIP_ADDR}${VIP_CIDR}")' dev '$(shell_escape_sq "$VIP_IF_DST")' || true"; }
+vip_del_dst() { run_ssh "sudo ip addr del '$(shell_escape_sq "${VIP_ADDR}${VIP_CIDR}")' dev '$(shell_escape_sq "$VIP_IF_DST")' || true"; }
 garp_interval_s() {
   awk -v ms="$VIP_GARP_INTERVAL_MS" 'BEGIN { if (ms <= 0) ms = 1; printf "%.3f", ms / 1000.0 }'
 }
@@ -186,9 +220,9 @@ vip_garp_repeat_mode() {
   i=1
   while [ "$i" -le "$count" ]; do
 
-    run "$SSH \"sudo arping -c 1 -${mode_flag} -I ${VIP_IF_DST} ${VIP_ADDR} || true\""
+    run_ssh "sudo arping -c 1 -${mode_flag} -I '$(shell_escape_sq "$VIP_IF_DST")' '$(shell_escape_sq "$VIP_ADDR")' || true"
     if [ "$i" -lt "$count" ]; then
-      run "sleep ${interval_s}"
+      run_cmd sleep "$interval_s"
     fi
     i=$((i + 1))
   done
@@ -236,13 +270,13 @@ wait_inventory_on_dst() {
   local step_ms=200
   local waited=0
   while [ "$waited" -lt "$max_ms" ]; do
-    if $SSH "[ -s '$dst/final/inventory.img' ]"; then
+    if "${SSH_CMD[@]}" "[ -s '$dst/final/inventory.img' ]"; then
       return 0
     fi
     sleep 0.2
     waited=$((waited + step_ms))
   done
-  $SSH "echo '=== Zielpfad (Timeout): $dst ===' >&2; find '$dst' -maxdepth 2 -type f 2>/dev/null | sort | tail -n 40" || true
+  "${SSH_CMD[@]}" "echo '=== Zielpfad (Timeout): $dst ===' >&2; find '$dst' -maxdepth 2 -type f 2>/dev/null | sort | tail -n 40" || true
   return 1
 }
 
@@ -261,7 +295,7 @@ cleanup_stale_dest_container() {
   local cleanup_start cleanup_end
   emit_event dest_container_cleanup_start target=$DST_HOST
   cleanup_start="$(ms)"
-  run "$SSH \"sudo runc $RUNC_ROOT delete -f '$NAME' 2>/dev/null || true\""
+  run_ssh "sudo runc $RUNC_ROOT delete -f '$(shell_escape_sq "$NAME")' 2>/dev/null || true"
   cleanup_end="$(ms)"
   emit_event dest_container_cleanup_done target=$DST_HOST dur_ms=$((cleanup_end - cleanup_start))
   log "Stale Dest-Container-Bereinigung fertig in $((cleanup_end - cleanup_start)) ms"
@@ -282,10 +316,10 @@ nat_set_dst() {
 
 conntrack_clear_dst() {
 
-  run "$SSH \"sudo conntrack -D -d ${VIP_ADDR} || true\""
+  run_ssh "sudo conntrack -D -d '$(shell_escape_sq "$VIP_ADDR")' || true"
 }
 conntrack_clear_src() {
-  run "sudo conntrack -D -d ${VIP_ADDR} || true"
+  run_cmd sudo conntrack -D -d "$VIP_ADDR" || true
 }
 
 traffic_hook_run() {
@@ -299,7 +333,7 @@ traffic_hook_run() {
   emit_event "traffic_${action}_start" mode="$TRAFFIC_MODE"
   start="$(ms)"
   log "Traffic ${action}: command hook"
-  run "$cmd"
+  run_operator_shell_hook "$action" "$cmd"
   end="$(ms)"
   emit_event "traffic_${action}_done" mode="$TRAFFIC_MODE" dur_ms=$((end - start))
 }
@@ -410,69 +444,69 @@ command -v runc >/dev/null || fail "runc fehlt auf Quelle (benke1)"
 mount | grep -q "$SRC_NFS_ROOT" || fail "NFS $SRC_NFS_ROOT nicht gemountet"
 
 [[ -d "$RUNC_BUNDLE_SRC" ]] || fail "runc-Bundle fehlt Quelle: $RUNC_BUNDLE_SRC"
-$SSH "command -v criu >/dev/null"       || fail "criu fehlt Ziel (benke2)"
-$SSH "command -v runc >/dev/null"       || fail "runc fehlt Ziel (benke2)"
-$SSH "[ -d '$RUNC_BUNDLE_DST' ]"        || fail "runc-Bundle fehlt Ziel: $RUNC_BUNDLE_DST"
+"${SSH_CMD[@]}" "command -v criu >/dev/null"       || fail "criu fehlt Ziel (benke2)"
+"${SSH_CMD[@]}" "command -v runc >/dev/null"       || fail "runc fehlt Ziel (benke2)"
+"${SSH_CMD[@]}" "[ -d '$RUNC_BUNDLE_DST' ]"        || fail "runc-Bundle fehlt Ziel: $RUNC_BUNDLE_DST"
 if [ "$PRECOPY_IMAGE_MODE_NORM" = "shared" ]; then
-  $SSH "[ -d '$REMOTE_NFS_ROOT' ]"      || fail "Shared-Root fehlt Ziel: $REMOTE_NFS_ROOT"
+  "${SSH_CMD[@]}" "[ -d '$REMOTE_NFS_ROOT' ]"      || fail "Shared-Root fehlt Ziel: $REMOTE_NFS_ROOT"
 else
-  $SSH "sudo mkdir -p '$DST_LOCAL_ROOT' '$IMAGES_BASE_DST'"
+  "${SSH_CMD[@]}" "sudo mkdir -p '$DST_LOCAL_ROOT' '$IMAGES_BASE_DST'"
 fi
 
 log "Prüfe Containerstatus Quelle…"
-if ! $RUNC_BIN $RUNC_ROOT state "$NAME" >/dev/null 2>&1; then
+if ! "${RUNC_BIN_ARGV[@]}" "${RUNC_ROOT_ARGV[@]}" state "$NAME" >/dev/null 2>&1; then
   fail "Container '$NAME' existiert nicht (runc state)."
 fi
-SRC_STATUS="$($RUNC_BIN $RUNC_ROOT state "$NAME" | awk -F\" '/\"status\":/ {print $4}')"
+SRC_STATUS="$("${RUNC_BIN_ARGV[@]}" "${RUNC_ROOT_ARGV[@]}" state "$NAME" | awk -F\" '/\"status\":/ {print $4}')"
 [ "$SRC_STATUS" = "running" ] || log "Hinweis: status=$SRC_STATUS (Pre-Dump sinnvoll im laufenden Zustand)."
 
 log "Portkollisionen benke2 (Info)…"
-$SSH "ss -tulpn | grep -E ':${TRAFFIC_PORT}\\b' || true"
+"${SSH_CMD[@]}" "ss -tulpn | grep -E ':${TRAFFIC_PORT}\\b' || true"
 
 traffic_prepare
 cleanup_stale_dest_container
 
 mkdir -p "$IMAGES_BASE_SRC"
-EXTRA=""
-[ "$TCP_EST" = "1" ] && EXTRA="--tcp-established"
+TCP_EST_ARGS=()
+[ "$TCP_EST" = "1" ] && TCP_EST_ARGS=(--tcp-established)
 
 declare -a PRE_STARTS PRE_ENDS
 for ((i=1; i<=PRE_DUMP_ROUNDS; i++)); do
   pre_dir="$IMAGES_BASE_SRC/pre$i"
-  parent_opt=""
-  (( i > 1 )) && parent_opt="--parent-path ../pre$((i-1))"
+  parent_args=()
+  (( i > 1 )) && parent_args=(--parent-path "../pre$((i-1))")
   log "Pre-Dump #$i → $pre_dir"
   emit_event pre_dump_round_start round=$i
-  run "mkdir -p '$pre_dir' '$pre_dir/work'"
+  run_cmd mkdir -p "$pre_dir" "$pre_dir/work"
 
   t_start=$(ms); PRE_STARTS+=("$t_start")
-  run "$RUNC_BIN $RUNC_ROOT checkpoint \"$NAME\" \
+  run_cmd "${RUNC_BIN_ARGV[@]}" "${RUNC_ROOT_ARGV[@]}" checkpoint "$NAME" \
     --pre-dump \
-    --image-path \"$pre_dir\" \
-    --work-path  \"$pre_dir/work\" \
+    --image-path "$pre_dir" \
+    --work-path  "$pre_dir/work" \
     --leave-running \
-    $parent_opt \
-    $EXTRA \
-    $RUNC_CP_FLAGS"
+    "${parent_args[@]}" \
+    "${TCP_EST_ARGS[@]}" \
+    "${RUNC_CP_FLAGS_ARGV[@]}"
   t_end=$(ms); PRE_ENDS+=("$t_end")
   emit_event pre_dump_round_done round=$i dur_ms=$((t_end - t_start))
   log "Pre-Dump #$i fertig in $((t_end - t_start)) ms"
 done
 
 final_dir="$IMAGES_BASE_SRC/final"
-parent_opt=""
-(( PRE_DUMP_ROUNDS >= 1 )) && parent_opt="--parent-path ../pre$PRE_DUMP_ROUNDS"
+parent_args=()
+(( PRE_DUMP_ROUNDS >= 1 )) && parent_args=(--parent-path "../pre$PRE_DUMP_ROUNDS")
 log "Finaler Dump → $final_dir (referenziert letzten Pre-Dump)"
-run "mkdir -p '$final_dir' '$final_dir/work'"
+run_cmd mkdir -p "$final_dir" "$final_dir/work"
 
 emit_event final_dump_start
 t_dump_start=$(ms)
-run "$RUNC_BIN $RUNC_ROOT checkpoint \"$NAME\" \
-  --image-path \"$final_dir\" \
-  --work-path  \"$final_dir/work\" \
-  $parent_opt \
-  $EXTRA \
-  $RUNC_CP_FLAGS"
+run_cmd "${RUNC_BIN_ARGV[@]}" "${RUNC_ROOT_ARGV[@]}" checkpoint "$NAME" \
+  --image-path "$final_dir" \
+  --work-path  "$final_dir/work" \
+  "${parent_args[@]}" \
+  "${TCP_EST_ARGS[@]}" \
+  "${RUNC_CP_FLAGS_ARGV[@]}"
 t_dump_end=$(ms)
 emit_event final_dump_done dur_ms=$((t_dump_end - t_dump_start))
 log "Finaler Dump fertig in $((t_dump_end - t_dump_start)) ms"
@@ -483,11 +517,11 @@ t_tx_start=$(ms)
 if [ "$PRECOPY_IMAGE_MODE_NORM" = "local_copy" ]; then
   SRC_CNT=$(sudo find "$IMAGES_BASE_SRC" -type f | wc -l)
   SRC_SUM=$(sudo du -sb "$IMAGES_BASE_SRC" | awk '{print $1}')
-  run "$SSH \"sudo rm -rf '$IMAGES_BASE_DST' && sudo mkdir -p '$IMAGES_BASE_DST'\""
-  run "$SSH \"sudo cp -a --no-preserve=mode,ownership,timestamps '${REMOTE_NFS_ROOT}/runc/$NAME/$CP_NAME/.' '$IMAGES_BASE_DST/'\""
+  run_ssh "sudo rm -rf '$IMAGES_BASE_DST' && sudo mkdir -p '$IMAGES_BASE_DST'"
+  run_ssh "sudo cp -a --no-preserve=mode,ownership,timestamps '${REMOTE_NFS_ROOT}/runc/$NAME/$CP_NAME/.' '$IMAGES_BASE_DST/'"
   wait_inventory_on_dst "$IMAGES_BASE_DST" || fail "inventory.img am Ziel fehlt nach Copy."
-  DST_CNT=$($SSH "find '$IMAGES_BASE_DST' -type f 2>/dev/null | wc -l" || echo 0)
-  DST_SUM=$($SSH "du -sb '$IMAGES_BASE_DST' 2>/dev/null | awk '{print \$1}'" || echo 0)
+  DST_CNT=$("${SSH_CMD[@]}" "find '$IMAGES_BASE_DST' -type f 2>/dev/null | wc -l" || echo 0)
+  DST_SUM=$("${SSH_CMD[@]}" "du -sb '$IMAGES_BASE_DST' 2>/dev/null | awk '{print \$1}'" || echo 0)
   [[ "$SRC_CNT" = "$DST_CNT" && "$SRC_SUM" = "$DST_SUM" ]] || fail "Transfer/Image-Mismatch: src($SRC_CNT/$SRC_SUM) != dst($DST_CNT/$DST_SUM) mode=$PRECOPY_IMAGE_MODE_NORM"
   transfer_note="copied_to_local_cache"
 else
@@ -520,7 +554,7 @@ log "Warte auf HEALTH OK am Ziel: $HEALTH_URL_DST"
 emit_event health_wait_start target=$DST_HOST
 t_up=0
 for i in $(seq 1 120); do
-  code=$($SSH "curl -sS -o /dev/null -w '%{http_code}' --max-time 2 '$HEALTH_URL_DST'") || code=000
+  code=$("${SSH_CMD[@]}" "curl -sS -o /dev/null -w '%{http_code}' --max-time 2 '$HEALTH_URL_DST'") || code=000
   if [[ "$code" = "200" ]]; then
     t_up=$(ms)
     emit_event health_ok target=$DST_HOST

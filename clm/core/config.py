@@ -267,6 +267,7 @@ def storage_from_legacy_env(config: dict[str, Any]) -> StoragePlan:
 def traffic_from_legacy_env(config: dict[str, Any]) -> TrafficPlan:
     traffic_cfg = deepcopy(config.get("traffic") or {})
     vip = config.get("vip") or {}
+    nested_vip = deepcopy(traffic_cfg.pop("vip", {}) or {})
     if traffic_cfg:
         mode = str(traffic_cfg.pop("mode", "external"))
         hooks = deepcopy(traffic_cfg.pop("hooks", {}))
@@ -278,12 +279,12 @@ def traffic_from_legacy_env(config: dict[str, Any]) -> TrafficPlan:
         hooks = {}
     return TrafficPlan(
         mode=mode,
-        vip_addr=traffic_cfg.pop("vip_addr", None) or vip.get("addr"),
-        vip_cidr=traffic_cfg.pop("vip_cidr", None) or vip.get("cidr"),
-        port=_optional_int(traffic_cfg.pop("port", None) or vip.get("port")),
+        vip_addr=traffic_cfg.pop("vip_addr", None) or nested_vip.get("addr") or vip.get("addr"),
+        vip_cidr=traffic_cfg.pop("vip_cidr", None) or nested_vip.get("cidr") or vip.get("cidr"),
+        port=_optional_int(traffic_cfg.pop("port", None) or nested_vip.get("port") or vip.get("port")),
         interfaces={
-            "source": str(traffic_cfg.pop("if_source", None) or vip.get("if_source") or ""),
-            "dest": str(traffic_cfg.pop("if_dest", None) or vip.get("if_dest") or ""),
+            "source": str(traffic_cfg.pop("if_source", None) or nested_vip.get("if_source") or vip.get("if_source") or ""),
+            "dest": str(traffic_cfg.pop("if_dest", None) or nested_vip.get("if_dest") or vip.get("if_dest") or ""),
         },
         hooks=hooks,
         options=deep_merge(config.get("migration") or {}, traffic_cfg),

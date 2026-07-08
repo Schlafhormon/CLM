@@ -81,7 +81,32 @@ class RuntimeBackendMigrationTests(unittest.TestCase):
         self.assertEqual(result.artifacts["returncode"], 0)
         self.assertEqual(captured["host"], "benke1")
         self.assertIn("export MODE=runc", captured["script"])
+        self.assertIn("export TRAFFIC_MODE=vip", captured["script"])
         self.assertIn("bash \"$REPO/scripts/migrate_precopy_vip_cutover.sh\"", captured["script"])
+
+    def test_runc_backend_exports_command_traffic_hooks(self):
+        cfg = deepcopy(cli.DEFAULTS)
+        cfg["repo_path"] = "~/CLM"
+        cfg["traffic"] = {
+            "mode": "command",
+            "hooks": {
+                "prepare": ["lbctl", "drain", "source"],
+                "switch": ["lbctl", "activate", "dest"],
+                "verify": ["curl", "-fsS", "http://service/health"],
+            },
+        }
+
+        script = RuncBackend().build_legacy_migration_script(
+            cfg,
+            method="precopy",
+            run_id="run-command",
+            events_log="/tmp/events.ndjson",
+        )
+
+        self.assertIn("export TRAFFIC_MODE=command", script)
+        self.assertIn("export TRAFFIC_PREPARE_CMD='lbctl drain source'", script)
+        self.assertIn("export TRAFFIC_SWITCH_CMD='lbctl activate dest'", script)
+        self.assertIn("export TRAFFIC_VERIFY_CMD='curl -fsS http://service/health'", script)
 
     def test_docker_migration_fails_fast(self):
         cfg = deepcopy(cli.DEFAULTS)

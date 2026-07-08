@@ -38,6 +38,11 @@ VIP_GARP_COUNT="${VIP_GARP_COUNT:-3}"
 VIP_GARP_INTERVAL_MS="${VIP_GARP_INTERVAL_MS:-200}"
 VIP_GARP_MODE="${VIP_GARP_MODE:-A}"
 VIP_CONNTRACK_CLEAR_SRC="${VIP_CONNTRACK_CLEAR_SRC:-0}"
+TRAFFIC_MODE="${TRAFFIC_MODE:-vip}"
+TRAFFIC_PREPARE_CMD="${TRAFFIC_PREPARE_CMD:-}"
+TRAFFIC_SWITCH_CMD="${TRAFFIC_SWITCH_CMD:-}"
+TRAFFIC_VERIFY_CMD="${TRAFFIC_VERIFY_CMD:-}"
+TRAFFIC_ROLLBACK_CMD="${TRAFFIC_ROLLBACK_CMD:-}"
 CONTAINER_IP_DST="${CONTAINER_IP_DST:-172.18.0.5}"
 POSTCOPY_READINESS_URLS="${POSTCOPY_READINESS_URLS:-http://${DST_HOST}:${VIP_PORT}/health}"
 POSTCOPY_READINESS_STABLE_SUCCESSES="${POSTCOPY_READINESS_STABLE_SUCCESSES:-0}"
@@ -484,6 +489,7 @@ nat_set_dst(){ ipt_dst -t nat -A PREROUTING -d "$VIP_ADDR" -p tcp --dport "$VIP_
 conntrack_clear_dst(){ run "$SSH \"sudo conntrack -D -d ${VIP_ADDR} || true\""; }
 conntrack_clear_src(){ run "sudo conntrack -D -d ${VIP_ADDR} || true"; }
 src_forward_clear(){
+  [ "$TRAFFIC_MODE" = "vip" ] || return 0
   local target_host="$POSTCOPY_SRC_FORWARD_TARGET_HOST"
   local target_port="$POSTCOPY_SRC_FORWARD_TARGET_PORT"
   ipt -t nat -D PREROUTING -d "$VIP_ADDR" -p tcp --dport "$VIP_PORT" -j DNAT --to-destination "${target_host}:${target_port}" 2>/dev/null || true
@@ -504,6 +510,10 @@ SRC_FORWARD_ENABLED=0
 SRC_FORWARD_ACTIVE=0
 src_forward_enable_if_configured(){
   local enable mode start_ms dur_ms
+  if [ "$TRAFFIC_MODE" != "vip" ]; then
+    emit_event postcopy_src_forward_skipped enabled=0 reason=non_vip_traffic_mode mode="$TRAFFIC_MODE"
+    return 0
+  fi
   enable="$(bool_to_int "$POSTCOPY_SRC_FORWARD_ENABLE")"
   SRC_FORWARD_ENABLED="$enable"
   if [ "$enable" != "1" ]; then
@@ -532,6 +542,7 @@ src_forward_enable_if_configured(){
 }
 src_forward_disable(){
   local reason="${1:-unspecified}" start_ms dur_ms
+  [ "$TRAFFIC_MODE" = "vip" ] || return 0
   if [ "$SRC_FORWARD_ACTIVE" != "1" ]; then
     emit_event postcopy_src_forward_stop_skipped reason="$reason" active=0
     return 0
@@ -542,6 +553,100 @@ src_forward_disable(){
   dur_ms=$(( $(ms) - start_ms ))
   SRC_FORWARD_ACTIVE=0
   emit_event postcopy_src_forward_stop_done reason="$reason" mode="$POSTCOPY_SRC_FORWARD_MODE" dur_ms="$dur_ms"
+}
+
+traffic_hook_run(){
+  local action="$1" cmd_var="$2" cmd start end
+  cmd="${!cmd_var:-}"
+  if [ -z "$cmd" ]; then
+    emit_event "traffic_${action}_skipped" mode="$TRAFFIC_MODE" reason=no_hook
+    log "Traffic ${action}: kein Hook konfiguriert"
+    return 0
+  fi
+  emit_event "traffic_${action}_start" mode="$TRAFFIC_MODE"
+  start="$(ms)"
+  log "Traffic ${action}: command hook"
+  run "$cmd"
+  end="$(ms)"
+  emit_event "traffic_${action}_done" mode="$TRAFFIC_MODE" dur_ms=$((end - start))
+}
+
+traffic_prepare(){
+  local prep_start prep_end
+  emit_event traffic_prepare_start mode="$TRAFFIC_MODE" net_mode=$NET_MODE vip="$VIP_ADDR" port="$VIP_PORT"
+  prep_start="$(ms)"
+  case "$TRAFFIC_MODE" in
+    vip)
+      vip_del_dst || true
+      nat_clear_dst || true
+      src_forward_clear || true
+      ;;
+    external)
+      log "Traffic prepare: external mode, CLM bereitet keine Umschaltung vor"
+      ;;
+    command)
+      traffic_hook_run prepare TRAFFIC_PREPARE_CMD
+      ;;
+    *)
+      fail "Unbekannter TRAFFIC_MODE='$TRAFFIC_MODE' (erwartet: external|command|vip)"
+      ;;
+  esac
+  prep_end="$(ms)"
+  emit_event traffic_prepare_done mode="$TRAFFIC_MODE" net_mode=$NET_MODE vip="$VIP_ADDR" port="$VIP_PORT" dur_ms=$((prep_end - prep_start))
+}
+
+traffic_switch(){
+  local src_conntrack_cleared
+  emit_event traffic_switch_start mode="$TRAFFIC_MODE" garp_mode=$VIP_GARP_MODE garp_count=$VIP_GARP_COUNT \
+    garp_interval_ms=$VIP_GARP_INTERVAL_MS conntrack_clear_src=$VIP_CONNTRACK_CLEAR_SRC \
+    src_forward_active=$SRC_FORWARD_ACTIVE
+  case "$TRAFFIC_MODE" in
+    vip)
+      emit_event vip_cutover_start garp_mode=$VIP_GARP_MODE garp_count=$VIP_GARP_COUNT \
+        garp_interval_ms=$VIP_GARP_INTERVAL_MS conntrack_clear_src=$VIP_CONNTRACK_CLEAR_SRC \
+        src_forward_active=$SRC_FORWARD_ACTIVE
+      log "VIP von Quelle entfernen…"; vip_del_src || true; src_forward_disable vip_cutover || true; nat_clear_src || true
+      log "VIP auf Ziel hinzufügen…";   vip_add_dst
+      if [ "$NET_MODE" = "bridge" ]; then
+        log "Setze DNAT auf benke2: VIP:${VIP_PORT} → ${CONTAINER_IP_DST}:${VIP_PORT}"
+        nat_set_dst
+      fi
+      src_conntrack_cleared=0
+      if [ "$VIP_CONNTRACK_CLEAR_SRC" = "1" ]; then
+        log "VIP Cutover: conntrack flush auf Source aktiv"
+        conntrack_clear_src || true
+        src_conntrack_cleared=1
+      fi
+      conntrack_clear_dst || true
+      vip_garp_dst
+      emit_event vip_cutover_done conntrack_src_cleared=$src_conntrack_cleared \
+        garp_mode=$VIP_GARP_MODE garp_count=$VIP_GARP_COUNT garp_interval_ms=$VIP_GARP_INTERVAL_MS
+      ;;
+    external)
+      log "Traffic switch: external mode, CLM fuehrt keine Umschaltung aus"
+      ;;
+    command)
+      traffic_hook_run switch TRAFFIC_SWITCH_CMD
+      ;;
+    *)
+      fail "Unbekannter TRAFFIC_MODE='$TRAFFIC_MODE' (erwartet: external|command|vip)"
+      ;;
+  esac
+  emit_event traffic_switch_done mode="$TRAFFIC_MODE"
+}
+
+traffic_verify(){
+  case "$TRAFFIC_MODE" in
+    external|command)
+      traffic_hook_run verify TRAFFIC_VERIFY_CMD
+      ;;
+    vip)
+      emit_event traffic_verify_skipped mode="$TRAFFIC_MODE" reason=legacy_health_wait
+      ;;
+    *)
+      fail "Unbekannter TRAFFIC_MODE='$TRAFFIC_MODE' (erwartet: external|command|vip)"
+      ;;
+  esac
 }
 
 LAZY_PID_FILE=""
@@ -577,6 +682,7 @@ trap cleanup INT TERM EXIT
 
 log "RUN_ID=$RUN_ID | Events -> $EVENTS_LOG"
 emit_event script_start mode=$MODE name=$NAME run_id=$RUN_ID
+emit_event traffic_config mode=$TRAFFIC_MODE
 emit_event vip_cutover_config \
   garp_count=$VIP_GARP_COUNT garp_interval_ms=$VIP_GARP_INTERVAL_MS garp_mode=$VIP_GARP_MODE \
   conntrack_clear_src=$VIP_CONNTRACK_CLEAR_SRC conntrack_clear_dst=1 \
@@ -655,10 +761,7 @@ t_tx_end=$(ms)
 emit_event transfer_done files_src=$SRC_CNT bytes_src=$SRC_SUM dur_ms=$((t_tx_end - t_tx_start))
 log "Transfer abgeschlossen in $((t_tx_end - t_tx_start)) ms"
 
-emit_event vip_prepare_start net_mode=$NET_MODE vip="$VIP_ADDR" port="$VIP_PORT"
-vip_del_dst || true
-nat_clear_dst || true
-src_forward_clear || true
+traffic_prepare
 
 emit_event_remote lazy_daemon_start addr="$SRC_LAZY_IP" port="$LAZY_PORT"
 LAZY_LOG="$IMAGES_BASE_DST/lazy-pages.log"; LAZY_PID_FILE="$IMAGES_BASE_DST/lazy-pages.pid"
@@ -710,25 +813,8 @@ wait_for_postcopy_readiness || fail "Dest-Readiness wurde vor VIP-Cutover nicht 
 log "Fuehre kurzes lokales Warmup auf dem Ziel aus…"
 postcopy_warmup_dst
 
-emit_event vip_cutover_start garp_mode=$VIP_GARP_MODE garp_count=$VIP_GARP_COUNT \
-  garp_interval_ms=$VIP_GARP_INTERVAL_MS conntrack_clear_src=$VIP_CONNTRACK_CLEAR_SRC \
-  src_forward_active=$SRC_FORWARD_ACTIVE
-log "VIP von Quelle entfernen…"; vip_del_src || true; src_forward_disable vip_cutover || true; nat_clear_src || true
-log "VIP auf Ziel hinzufügen…";   vip_add_dst
-if [ "$NET_MODE" = "bridge" ]; then
-  log "Setze DNAT auf benke2: VIP:${VIP_PORT} → ${CONTAINER_IP_DST}:${VIP_PORT}"
-  nat_set_dst
-fi
-src_conntrack_cleared=0
-if [ "$VIP_CONNTRACK_CLEAR_SRC" = "1" ]; then
-  log "VIP Cutover: conntrack flush auf Source aktiv"
-  conntrack_clear_src || true
-  src_conntrack_cleared=1
-fi
-conntrack_clear_dst || true
-vip_garp_dst
-emit_event vip_cutover_done conntrack_src_cleared=$src_conntrack_cleared \
-  garp_mode=$VIP_GARP_MODE garp_count=$VIP_GARP_COUNT garp_interval_ms=$VIP_GARP_INTERVAL_MS
+traffic_switch
+traffic_verify
 
 log "Warte auf HEALTH OK am Ziel: $HEALTH_URL_DST"
 t_up=0
@@ -744,7 +830,7 @@ run "$SSH \"if [ -f '$LAZY_PID_FILE' ]; then sudo kill \\\$(cat '$LAZY_PID_FILE'
 emit_event_remote lazy_daemon_stop reason=health_ok
 
 emit_event summary mode=$MODE name=$NAME cp=$CP_NAME tcp_est=$TCP_EST lazy_port=$LAZY_PORT lazy_addr="$SRC_LAZY_ADDR" \
-  images_src="$IMAGES_BASE_SRC" images_dst="$IMAGES_BASE_DST" bundle_dst="$RUNC_BUNDLE_DST" vip="$VIP_ADDR" net_mode="$NET_MODE" \
+  images_src="$IMAGES_BASE_SRC" images_dst="$IMAGES_BASE_DST" bundle_dst="$RUNC_BUNDLE_DST" traffic_mode="$TRAFFIC_MODE" vip="$VIP_ADDR" net_mode="$NET_MODE" \
   vip_garp_count=$VIP_GARP_COUNT vip_garp_interval_ms=$VIP_GARP_INTERVAL_MS vip_garp_mode=$VIP_GARP_MODE \
   vip_conntrack_clear_src=$VIP_CONNTRACK_CLEAR_SRC readiness_urls="$POSTCOPY_READINESS_URLS" \
   readiness_stable_successes="$POSTCOPY_READINESS_STABLE_SUCCESSES" readiness_interval_ms="$POSTCOPY_READINESS_INTERVAL_MS" \

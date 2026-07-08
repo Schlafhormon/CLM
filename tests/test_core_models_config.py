@@ -117,6 +117,28 @@ class CoreConfigTests(unittest.TestCase):
         self.assertEqual(request.probes[0].name, "tcp-ready")
         self.assertTrue(request.probes[0].required)
 
+    def test_traffic_config_accepts_nested_vip_compatibility_fields(self):
+        cfg = core_config.load_legacy_env("config/env.example.yaml")
+        cfg["traffic"] = {
+            "mode": "vip",
+            "vip": {
+                "addr": "10.10.10.10",
+                "cidr": "/32",
+                "port": 9090,
+                "if_source": "eth-src",
+                "if_dest": "eth-dst",
+            },
+        }
+
+        traffic = core_config.traffic_from_legacy_env(cfg)
+
+        self.assertEqual(traffic.mode, "vip")
+        self.assertEqual(traffic.vip_addr, "10.10.10.10")
+        self.assertEqual(traffic.vip_cidr, "/32")
+        self.assertEqual(traffic.port, 9090)
+        self.assertEqual(traffic.interfaces["source"], "eth-src")
+        self.assertEqual(traffic.interfaces["dest"], "eth-dst")
+
 
 if __name__ == "__main__":
     unittest.main()

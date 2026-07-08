@@ -134,7 +134,8 @@ Edit `config/env.yaml` for your lab:
 - `repo_path`: path to this CLM checkout on all hosts, default `~/CLM`
 - `hosts`: monitor, source, and destination SSH names and IPs
 - `paths`: shared CRIU root, run root, and log root
-- `vip`: service VIP, CIDR, port, and host interfaces
+- `traffic`: traffic backend, normally `external`, `command`, or legacy `vip`
+- `vip`: legacy service VIP, CIDR, port, and host interfaces
 - `container`: runc container name, image, bundle path, and Gunicorn sizing
 - `migration`, `precopy`, `postcopy`: method-specific runtime settings
 - `monitor`: probe intervals, timeouts, burst behavior, and target families
@@ -190,6 +191,13 @@ clm run --env config/env.yaml --method precopy --no-monitor
 clm run --env config/env.yaml --method precopy --no-migrate
 clm run --env config/env.yaml --method postcopy --no-cleanup
 ```
+
+## Traffic Cutover
+
+Traffic handling is configured under `traffic:`. Use `external` when traffic is
+managed outside CLM, `command` for operator-provided hooks, or `vip` for the
+existing lab-oriented VIP/GARP/conntrack behavior. See
+[docs/traffic.md](docs/traffic.md) for examples and compatibility notes.
 
 ## Analysis
 

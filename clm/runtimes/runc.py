@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from clm.core.models import MigrationResult, PreflightResult
+from clm.migration.traffic import select_traffic_backend
 from clm.runtimes.base import RuntimeBackend, RuntimeInspection
 
 
@@ -92,21 +93,18 @@ class RuncBackend(RuntimeBackend):
         dst_ip = legacy_cli.host_ip(cfg, "dest")
         dst_user = cfg["hosts"].get("dest", {}).get("user") or "benke2"
         container = cfg["container"]
-        vip = cfg["vip"]
+        traffic = select_traffic_backend(cfg)
+        traffic_env = traffic.script_env(cfg)
+        port = traffic_env.get("VIP_PORT") or ((cfg.get("vip") or {}).get("port")) or ((cfg.get("traffic") or {}).get("port")) or 8080
         post = cfg["postcopy"]
         migration = cfg.get("migration", {})
         precopy = cfg.get("precopy", {})
-        health_url_dst = f"http://{dst_ip}:{vip['port']}/health"
+        health_url_dst = f"http://{dst_ip}:{port}/health"
         readiness_urls = legacy_cli._normalize_url_list(post.get("readiness_urls")) or [health_url_dst]
         warmup_urls = legacy_cli._normalize_url_list(post.get("warmup_urls")) or [
-            f"http://{dst_ip}:{vip['port']}/ready",
-            f"http://{dst_ip}:{vip['port']}/counter",
+            f"http://{dst_ip}:{port}/ready",
+            f"http://{dst_ip}:{port}/counter",
         ]
-        vip_conntrack_clear_src = migration.get("vip_conntrack_clear_src", 0)
-        if isinstance(vip_conntrack_clear_src, str):
-            vip_conntrack_clear_src = 1 if vip_conntrack_clear_src.strip().lower() in ("1", "true", "yes", "on") else 0
-        else:
-            vip_conntrack_clear_src = 1 if bool(vip_conntrack_clear_src) else 0
 
         env_vars: dict[str, Any] = {
             "REPO": legacy_cli.repo_path_remote(cfg),
@@ -122,33 +120,26 @@ class RuncBackend(RuntimeBackend):
             "DST_HOST": dst_ip,
             "DST_USER": dst_user,
             "HEALTH_URL_DST": health_url_dst,
-            "VIP_ADDR": vip["addr"],
-            "VIP_CIDR": vip["cidr"],
-            "VIP_IF_SRC": vip["if_source"],
-            "VIP_IF_DST": vip["if_dest"],
-            "VIP_PORT": vip["port"],
             "NET_MODE": migration.get("net_mode", "host"),
             "CONTAINER_IP_DST": migration.get("container_ip_dest", "172.18.0.5"),
-            "VIP_GARP_COUNT": migration.get("vip_garp_count", 3),
-            "VIP_GARP_INTERVAL_MS": migration.get("vip_garp_interval_ms", 200),
-            "VIP_GARP_MODE": migration.get("vip_garp_mode", "A"),
-            "VIP_CONNTRACK_CLEAR_SRC": vip_conntrack_clear_src,
             "LOG_DIR": cfg["paths"]["logs_root"],
             "EVENTS_LOG": events_log,
             "TCP_EST": precopy.get("tcp_established", 1),
             "PRE_DUMP_ROUNDS": precopy.get("pre_dump_rounds", 0),
             "PRECOPY_IMAGE_MODE": precopy.get("image_mode", "shared"),
         }
+        env_vars.update(traffic_env)
         if method == "postcopy":
             post_runtime = legacy_cli._resolve_postcopy_runtime_settings(post)
+            src_forward_enable = post_runtime["src_forward_enable"] if traffic.mode == "vip" else 0
             env_vars.update(
                 {
                     "LAZY_PORT": post["lazy_port"],
                     "SRC_LAZY_IP": post["src_lazy_ip"],
-                    "POSTCOPY_SRC_FORWARD_ENABLE": post_runtime["src_forward_enable"],
+                    "POSTCOPY_SRC_FORWARD_ENABLE": src_forward_enable,
                     "POSTCOPY_SRC_FORWARD_MODE": post.get("src_forwarding_mode", "iptables_dnat"),
                     "POSTCOPY_SRC_FORWARD_TARGET_HOST": post.get("src_forwarding_target_host", dst_ip),
-                    "POSTCOPY_SRC_FORWARD_TARGET_PORT": post.get("src_forwarding_target_port", vip["port"]),
+                    "POSTCOPY_SRC_FORWARD_TARGET_PORT": post.get("src_forwarding_target_port", port),
                     "POSTCOPY_READINESS_URLS": ",".join(readiness_urls),
                     "POSTCOPY_READINESS_STABLE_SUCCESSES": post_runtime["readiness_stable_successes"],
                     "POSTCOPY_READINESS_INTERVAL_MS": post.get("readiness_interval_ms", 200),

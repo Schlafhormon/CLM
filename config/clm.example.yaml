@@ -1,6 +1,10 @@
-# CLM config schema draft v1.
-# This file is the future operator-facing config and does not replace the
-# legacy config/env.example.yaml used by the current CLI path.
+# CLM operator-first example config, schema draft v1.
+# Start new operator-facing configurations from this file. It models an
+# external traffic handoff by default and avoids CLM-managed VIP or synthetic
+# research load assumptions.
+#
+# The current executable legacy CLI still accepts config/env.example.yaml, but
+# that file is a lab compatibility example, not the product-facing default.
 
 version: 1
 
@@ -108,6 +112,8 @@ storage:
 traffic:
   # external means CLM migrates and verifies readiness, but traffic is switched
   # by an external load balancer, service mesh, route update, or operator flow.
+  # This is the operator-first default: no VIP address changes, conntrack flush,
+  # gratuitous ARP, or CLM-managed synthetic load are implied.
   mode: external
   hooks:
     verify:

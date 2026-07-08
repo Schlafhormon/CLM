@@ -48,8 +48,9 @@ CLM currently works as an extracted research tool:
   cleanup.
 - Post-copy orchestration supports CRIU lazy pages, destination readiness
   checks, optional source forwarding, warmup, VIP cutover, and cleanup.
-- Monitoring records HTTP, L4 TCP, counters, info endpoints, streams,
-  downloads, uploads, and latency-related data.
+- Monitoring records operator-facing HTTP/L4 TCP availability by default.
+  Counters, info endpoints, streams, downloads, uploads, and latency-related
+  research artifacts remain available as legacy/optional targets.
 - Batch execution stores run metadata, status files, event logs, config
   snapshots, and per-run summaries.
 - Analysis can generate metrics, summary statistics, downtime segments, and
@@ -82,7 +83,8 @@ orchestrator":
 ```text
 clm/                         Python package and CLI implementation
 clm.py                       Compatibility entry point
-config/env.example.yaml      Host, path, VIP, migration, monitor, and load config
+config/clm.example.yaml      Operator-first config example with external traffic
+config/env.example.yaml      Legacy lab env.yaml example with VIP/load compatibility
 config/analysis.yaml         Default analysis and plot configuration
 config/analysis_paper.yaml   Extended comparison plot configuration from research use
 scripts/                     runc bundle, migration, cleanup, hostinfo, forensics scripts
@@ -129,7 +131,13 @@ pip install -e .
 cp config/env.example.yaml config/env.yaml
 ```
 
-Edit `config/env.yaml` for your lab:
+`config/clm.example.yaml` is the operator-first example. It uses
+`traffic.mode: external` and does not assume CLM-managed VIP cutover or
+research load generation.
+
+`config/env.example.yaml` remains the current executable legacy CLI example.
+Copy it to `config/env.yaml` only when using the existing runc/lab
+compatibility path. Edit `config/env.yaml` for that lab path:
 
 - `repo_path`: path to this CLM checkout on all hosts, default `~/CLM`
 - `hosts`: monitor, source, and destination SSH names and IPs
@@ -176,7 +184,9 @@ clm run --env config/env.yaml --method precopy --repeats 1
 
 This is the recommended path for ordinary migrations: no `--load` flag, no
 synthetic workload generator, and only the configured migration plus monitoring
-path.
+path. Run metadata records this as `load_modes: []` and
+`synthetic_load: false`; the historical `load: idle` label is retained only for
+batch and analysis compatibility.
 
 Run a post-copy batch:
 
@@ -199,12 +209,14 @@ clm run --env config/env.yaml --method postcopy --load stream --load upload
 
 Supported legacy profiles are `idle`, `cpu`, `wrk1`, `wrk2`, `wrk3`,
 `download`, `upload`, and `stream`. `heavy` is kept as a compatibility alias
-for `cpu`. These profiles came from the research setup, depend on the Flask
+for `cpu`; `idle` starts no synthetic load and resolves to `load_modes: []`.
+The synthetic profiles came from the research setup, depend on the Flask
 example workload in `workload/flask_app/`, and are not intended to remain part
 of the core orchestrator. New operator workflows should use app probes and
 external traffic/load generation instead of CLM-managed synthetic profiles.
-When `traffic.mode` is `external`, `command`, or `none`, CLM fails fast if a
-legacy synthetic load profile resolves to `load.target: vip`.
+When `traffic.mode` is `external`, `command`, or `none`, CLM fails fast before
+run side effects if a legacy synthetic load profile resolves to
+`load.target: vip`.
 
 Useful run switches:
 

@@ -22,7 +22,8 @@ successful restore or migration into a failed migration.
 
 `clm run` starts core monitoring when monitoring is enabled. Without `--load`,
 the generated runtime monitor command contains source/destination HTTP and TCP
-health targets plus any explicit HTTP/TCP entries from `probes:`. VIP monitor
+health targets plus any explicit HTTP/TCP entries from `probes:`. It does not
+add info, counter, stream, download, or upload target families. VIP monitor
 targets are added only when the effective traffic backend is `vip`, or when an
 operator explicitly configures a VIP probe. External and command traffic modes
 therefore do not imply VIP metrics.
@@ -68,8 +69,12 @@ operator functionality.
 `clm run --load ...` keeps the legacy research monitor behavior compatible:
 synthetic load profiles can add stream/download/upload monitor targets and
 legacy info/counter targets. For a no-load migration, those targets are not
-configured or started by default. Operators that need the old lab monitor
-without a load profile can opt in with `monitor.enable_legacy_targets: true` or
+configured or started by default even when old compatibility defaults such as
+`monitor.enable_info_targets: true` are present. Run and batch metadata record
+no-load as `load_modes: []` and `synthetic_load: false`; the old `load: idle`
+label is retained only for historical analysis grouping. Operators that need
+the old lab monitor without a load profile can opt in with
+`monitor.enable_legacy_targets: true` or
 `monitor.legacy_research_targets: true`.
 
 ## Compatibility

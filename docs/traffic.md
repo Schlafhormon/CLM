@@ -1,8 +1,10 @@
 # Traffic Configuration
 
-CLM treats traffic cutover as an optional backend. The default model is not
-VIP-specific; the old `vip:` section is still accepted for compatibility with
-the existing runc lab scripts.
+CLM treats traffic cutover as an optional backend. The operator-first model is
+not VIP-specific: `traffic.mode: external` leaves traffic handoff to an
+external load balancer, service mesh, route controller, or operator flow. The
+old `vip:` section is still accepted for compatibility with the existing runc
+lab scripts.
 
 ## Modes
 
@@ -15,8 +17,8 @@ the existing runc lab scripts.
 - `command`: CLM runs configured command hooks for `prepare`, `switch`,
   `verify`, and optional `rollback`. Hooks are the only traffic handoff action;
   CLM does not perform VIP IP manipulation for this mode.
-- `vip`: compatibility adapter for the existing VIP/GARP/conntrack logic used
-  by the current runc scripts.
+- `vip`: legacy lab compatibility adapter for the existing VIP/GARP/conntrack
+  logic used by the current runc scripts.
 
 For `external` and `command`, CLM still performs the configured migration and
 destination readiness/health checks. Default monitoring tracks source and
@@ -30,10 +32,13 @@ environment variables. The Bash scripts still contain VIP helper functions for
 the `vip` branch; their `external` and `command` `TRAFFIC_MODE` cases must not
 execute `ip addr`, `conntrack`, or `arping`.
 
-Legacy synthetic load profiles are still lab-oriented. When `traffic.mode` is
-`external`, `command`, or `none`, CLM rejects `load.target: vip` before run
-side effects. Use `src`, `dst`, `all`, explicit probes, or traffic/load tooling
-outside CLM for non-VIP setups.
+Legacy synthetic load profiles are still lab-oriented and are not part of the
+operator-first traffic model. Without `--load`, run metadata uses
+`load_modes: []` and `synthetic_load: false`; the compatibility label
+`load: idle` does not imply a research scenario or load generator. When
+`traffic.mode` is `external`, `command`, or `none`, CLM rejects
+`load.target: vip` before run side effects. Use `src`, `dst`, `all`, explicit
+probes, or traffic/load tooling outside CLM for non-VIP setups.
 
 ## Examples
 
@@ -85,4 +90,6 @@ traffic:
 ```
 
 If `traffic:` is absent and `vip:` exists, CLM selects `vip` for backwards
-compatibility. New configurations should set `traffic.mode` explicitly.
+compatibility with legacy env.yaml files. New operator configurations should
+start from `config/clm.example.yaml` and set `traffic.mode: external` or
+another explicit backend.

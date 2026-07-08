@@ -1870,6 +1870,7 @@ def run_cli(
         load_label = "idle"
     else:
         load_label = ",".join(load_modes)
+    synthetic_load = bool(load_modes)
 
     if method == "postcopy":
         post = cfg.setdefault("postcopy", {})
@@ -1906,6 +1907,7 @@ def run_cli(
         "method": method,
         "load": load_label,
         "load_modes": load_modes,
+        "synthetic_load": synthetic_load,
         "repeats": int(repeats),
         "env_file": env_path,
         "start_ts": batch_now_iso(),
@@ -1955,6 +1957,8 @@ def run_cli(
                 "run_id": run_id,
                 "method": method,
                 "load": load_label,
+                "load_modes": load_modes,
+                "synthetic_load": synthetic_load,
                 "monitor_enabled": not no_monitor,
                 "migrate_enabled": not no_migrate,
                 "control_run": bool(no_migrate),
@@ -1973,6 +1977,7 @@ def run_cli(
                 "method": method,
                 "load": load_label,
                 "load_modes": load_modes,
+                "synthetic_load": synthetic_load,
                 "no_monitor": no_monitor,
                 "no_migrate": no_migrate,
                 "no_cleanup": no_cleanup,
@@ -2157,6 +2162,9 @@ def run_cli(
                         "run_dir": run_dir,
                         "status": status.get("status"),
                         "analyze_rc": rc_analyze,
+                        "load": load_label,
+                        "load_modes": load_modes,
+                        "synthetic_load": synthetic_load,
                         "legacy_path": str(Path(runs_root) / run_id),
                     }
                 )

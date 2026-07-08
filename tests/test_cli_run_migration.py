@@ -329,9 +329,29 @@ class RunMigrationTests(unittest.TestCase):
                     cli_argv=["run", "--method", "precopy", "--no-migrate"],
                 )
 
+            batch_files = list((Path(tmp) / "runs").glob("batches/*/batch.json"))
+            status_files = list((Path(tmp) / "runs").glob("batches/*/runs/*/status.json"))
+            snapshot_files = list((Path(tmp) / "runs").glob("batches/*/runs/*/meta/config_snapshot.yaml"))
+            self.assertEqual(len(batch_files), 1)
+            self.assertEqual(len(status_files), 1)
+            self.assertEqual(len(snapshot_files), 1)
+            batch_meta = json.loads(batch_files[0].read_text(encoding="utf-8"))
+            status_meta = json.loads(status_files[0].read_text(encoding="utf-8"))
+            snapshot = yaml.safe_load(snapshot_files[0].read_text(encoding="utf-8"))
+
         self.assertEqual(rc, 0)
         start_load.assert_not_called()
         self.assertEqual(start_monitor.call_args.kwargs["load_modes"], [])
+        self.assertEqual(batch_meta["load"], "idle")
+        self.assertEqual(batch_meta["load_modes"], [])
+        self.assertFalse(batch_meta["synthetic_load"])
+        self.assertEqual(batch_meta["runs"][0]["load_modes"], [])
+        self.assertFalse(batch_meta["runs"][0]["synthetic_load"])
+        self.assertEqual(status_meta["load"], "idle")
+        self.assertEqual(status_meta["load_modes"], [])
+        self.assertFalse(status_meta["synthetic_load"])
+        self.assertEqual(snapshot["scenario"]["load_modes"], [])
+        self.assertFalse(snapshot["scenario"]["synthetic_load"])
 
     def test_run_cli_with_legacy_load_starts_synthetic_load(self):
         cfg = deepcopy(cli.DEFAULTS)
@@ -362,10 +382,25 @@ class RunMigrationTests(unittest.TestCase):
                     cli_argv=["run", "--method", "precopy", "--load", "cpu", "--no-migrate"],
                 )
 
+            batch_files = list((Path(tmp) / "runs").glob("batches/*/batch.json"))
+            status_files = list((Path(tmp) / "runs").glob("batches/*/runs/*/status.json"))
+            self.assertEqual(len(batch_files), 1)
+            self.assertEqual(len(status_files), 1)
+            batch_meta = json.loads(batch_files[0].read_text(encoding="utf-8"))
+            status_meta = json.loads(status_files[0].read_text(encoding="utf-8"))
+
         self.assertEqual(rc, 0)
         start_load.assert_called_once()
         self.assertEqual(start_load.call_args.args[2], ["cpu"])
         self.assertEqual(start_monitor.call_args.kwargs["load_modes"], ["cpu"])
+        self.assertEqual(batch_meta["load"], "cpu")
+        self.assertEqual(batch_meta["load_modes"], ["cpu"])
+        self.assertTrue(batch_meta["synthetic_load"])
+        self.assertEqual(batch_meta["runs"][0]["load_modes"], ["cpu"])
+        self.assertTrue(batch_meta["runs"][0]["synthetic_load"])
+        self.assertEqual(status_meta["load"], "cpu")
+        self.assertEqual(status_meta["load_modes"], ["cpu"])
+        self.assertTrue(status_meta["synthetic_load"])
 
     def test_vip_run_baseline_keeps_legacy_vip_cleanup(self):
         cfg = deepcopy(cli.DEFAULTS)

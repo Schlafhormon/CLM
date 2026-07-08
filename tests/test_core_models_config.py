@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import ast
 import tempfile
 import unittest
 from pathlib import Path
@@ -49,6 +50,22 @@ class CoreModelsTests(unittest.TestCase):
 
 
 class CoreConfigTests(unittest.TestCase):
+    def test_core_package_does_not_import_monitoring(self):
+        offenders = []
+        for path in Path("clm/core").glob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name == "clm.monitoring" or alias.name.startswith("clm.monitoring."):
+                            offenders.append(f"{path}:{alias.name}")
+                elif isinstance(node, ast.ImportFrom):
+                    module = node.module or ""
+                    if module == "clm.monitoring" or module.startswith("clm.monitoring."):
+                        offenders.append(f"{path}:{module}")
+
+        self.assertEqual(offenders, [])
+
     def test_load_legacy_env_matches_cli_loader_for_example_config(self):
         path = Path("config/env.example.yaml")
         core_cfg = core_config.load_legacy_env(path)

@@ -568,9 +568,9 @@ def probes_from_legacy_env(config: dict[str, Any]) -> list[ProbeSpec]:
 
 
 def _probe_from_mapping(value: Any) -> ProbeSpec:
-    from clm.monitoring.probes import parse_probe_spec
+    from clm.core.probes import parse_probe_spec
 
-    return parse_probe_spec(value).to_core_probe_spec()
+    return parse_probe_spec(value)
 
 
 def _container_ref_from_mapping(container_cfg: dict[str, Any], runtime: RuntimeRef) -> ContainerRef:

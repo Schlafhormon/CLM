@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from clm.core.probes import parse_probe_spec as parse_core_probe_spec
+
 
 PROBE_TYPES = {"http", "tcp", "command"}
 PROBE_TYPE_ALIASES = {
@@ -176,31 +178,7 @@ def parse_probe_spec(value: Any) -> ProbeSpec:
 
     if isinstance(value, ProbeSpec):
         return value
-    if not isinstance(value, dict):
-        raise ValueError("probe entries must be mappings")
-
-    cfg = dict(value)
-    probe_type = _normalize_probe_type(cfg.pop("type", cfg.pop("kind", "http")))
-    expected_statuses = cfg.pop("expected_statuses", None)
-    expected_status = cfg.pop("expected_status", None)
-    if expected_statuses is None and expected_status is not None:
-        expected_statuses = (expected_status,)
-
-    return ProbeSpec(
-        name=str(cfg.pop("name", probe_type)),
-        type=probe_type,
-        target=cfg.pop("target", None),
-        url=cfg.pop("url", None),
-        host=cfg.pop("host", None),
-        port=cfg.pop("port", None),
-        command=cfg.pop("command", ()),
-        interval_ms=cfg.pop("interval_ms", None),
-        timeout_ms=cfg.pop("timeout_ms", None),
-        required=_as_bool(cfg.pop("required", False)),
-        expected_statuses=_int_tuple(expected_statuses) or (200,),
-        expected_exit_code=int(cfg.pop("expected_exit_code", 0)),
-        metadata=cfg,
-    )
+    return core_probe_to_monitoring_probe(parse_core_probe_spec(value))
 
 
 def core_probe_to_monitoring_probe(value: Any) -> ProbeSpec:
@@ -208,10 +186,12 @@ def core_probe_to_monitoring_probe(value: Any) -> ProbeSpec:
 
     if isinstance(value, ProbeSpec):
         return value
-    expected_statuses = getattr(value, "metadata", {}).get("expected_statuses") if hasattr(value, "metadata") else None
+    metadata = dict(getattr(value, "metadata", {}) or {})
+    expected_statuses = metadata.pop("expected_statuses", None)
     if expected_statuses is None:
         expected_status = getattr(value, "expected_status", None)
         expected_statuses = (expected_status,) if expected_status is not None else (200,)
+    expected_exit_code = metadata.pop("expected_exit_code", 0)
     return ProbeSpec(
         name=getattr(value, "name"),
         type=getattr(value, "type"),
@@ -224,8 +204,8 @@ def core_probe_to_monitoring_probe(value: Any) -> ProbeSpec:
         timeout_ms=getattr(value, "timeout_ms", None),
         required=bool(getattr(value, "required", False)),
         expected_statuses=expected_statuses,
-        expected_exit_code=getattr(value, "metadata", {}).get("expected_exit_code", 0) if hasattr(value, "metadata") else 0,
-        metadata=dict(getattr(value, "metadata", {}) or {}),
+        expected_exit_code=expected_exit_code,
+        metadata=metadata,
     )
 
 

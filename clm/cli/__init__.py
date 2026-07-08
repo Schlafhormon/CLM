@@ -1363,11 +1363,10 @@ def best_effort_abort_cleanup(cfg: dict) -> None:
 
 def run_migration(cfg: dict, method: str, run_id: str, events_log: str, migrate_log: str) -> int:
     # Run a migration.
-    from clm.runtimes import select_backend
+    from clm.migration.strategies import select_strategy
 
-    result = select_backend(cfg).migrate(
+    result = select_strategy(cfg, requested=method).run(
         cfg,
-        method=method,
         run_id=run_id,
         events_log=events_log,
         migrate_log=migrate_log,

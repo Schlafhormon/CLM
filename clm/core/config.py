@@ -181,7 +181,7 @@ def validate_clm_v1_config(config: dict[str, Any]) -> tuple[str, ...]:
     if not isinstance(traffic_cfg, dict):
         errors.append("traffic must be a mapping")
     elif str(traffic_cfg.get("mode", "external")).strip().lower() not in {"external", "command", "vip", "none"}:
-        errors.append("traffic.mode must be external, command, or vip")
+        errors.append("traffic.mode must be external, command, vip, or none")
 
     try:
         for _probe in probes_from_v1_config(config):

@@ -9,6 +9,7 @@ the existing runc lab scripts.
 - `external`: CLM does not switch traffic. Use this when a load balancer,
   service mesh, route controller, or operator changes traffic outside CLM. A
   `verify` hook can still be configured.
+- `none`: alias for `external`.
 - `command`: CLM runs configured command hooks for `prepare`, `switch`,
   `verify`, and optional `rollback`.
 - `vip`: compatibility adapter for the existing VIP/GARP/conntrack logic used

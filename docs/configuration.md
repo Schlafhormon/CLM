@@ -108,6 +108,7 @@ Important fields:
 `traffic.mode` accepts:
 
 - `external`: CLM does not switch traffic. It can still run a verify hook.
+- `none`: alias for `external`.
 - `command`: CLM runs operator-provided prepare, switch, verify, and rollback
   hooks.
 - `vip`: legacy lab-oriented VIP/GARP/conntrack behavior.

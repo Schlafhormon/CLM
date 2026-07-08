@@ -643,7 +643,15 @@ Pruefe besonders:
 Arbeite im Review-Stil:
 - Findings zuerst, nach Schwere sortiert.
 - Mit Datei- und Zeilenreferenzen.
-- Keine Codeaenderungen, ausser du findest kleine offensichtliche Doku-Tippfehler.
+- Kleine, eindeutig sichere Fixes direkt umsetzen.
+- Keine grossen oder riskanten Fixes direkt umsetzen. Dazu zaehlen
+  Architekturentscheidungen, API-/Config-Aenderungen, Remote-Ausfuehrungslogik,
+  Migrationsverhalten, Cleanup-Verhalten, Security-/Secret-Handling,
+  Runtime-Backend-Semantik und alles, was bestehende Nutzer-Workflows brechen
+  koennte. Solche Punkte als Findings mit konkreter Fix-Empfehlung melden.
+- Wenn du kleine Fixes umgesetzt hast, danach erneut gezielt pruefen und die
+  geaenderten Dateien separat im Ergebnis nennen.
 - Fuehre `python -m pytest` aus, wenn praktikabel.
-- Schliesse mit einer priorisierten Fix-Liste.
+- Schliesse mit einer priorisierten Fix-Liste fuer alle nicht direkt
+  behobenen Findings.
 ```

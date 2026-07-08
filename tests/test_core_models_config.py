@@ -224,6 +224,19 @@ class CoreConfigTests(unittest.TestCase):
         self.assertTrue(any("storage.mode" in error for error in errors))
         self.assertTrue(any("traffic.mode" in error for error in errors))
 
+    def test_clm_v1_validation_accepts_none_traffic_mode(self):
+        errors = core_config.validate_clm_v1_config(
+            {
+                "version": 1,
+                "source": "src.example",
+                "destination": "dst.example",
+                "container": {"id": "web"},
+                "traffic": {"mode": "none"},
+            }
+        )
+
+        self.assertEqual(errors, ())
+
 
 if __name__ == "__main__":
     unittest.main()

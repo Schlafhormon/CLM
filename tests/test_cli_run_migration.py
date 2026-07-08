@@ -2,8 +2,10 @@
 
 
 import json
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +17,87 @@ from clm import cli
 
 
 class RunMigrationTests(unittest.TestCase):
+    def _run_cli_expect_capability_gate(self, cfg, *, method="precopy"):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg["paths"]["runs_root"] = str(Path(tmp) / "runs")
+            cfg["paths"]["logs_root"] = str(Path(tmp) / "logs")
+            stderr = io.StringIO()
+            with patch("clm.cli.cleanup_dest") as cleanup_dest, \
+                 patch("clm.cli.reset_source") as reset_source, \
+                 patch("clm.cli.start_monitor") as start_monitor, \
+                 patch("clm.cli.start_load") as start_load, \
+                 patch("clm.cli.run_migration") as run_migration, \
+                 redirect_stderr(stderr):
+                rc = cli.run_cli(
+                    cfg,
+                    method=method,
+                    repeats=1,
+                    load_flags=["cpu"],
+                    no_monitor=False,
+                    no_migrate=False,
+                    no_cleanup=False,
+                    auto_analyse=False,
+                    env_path="config/env.yaml",
+                    cli_argv=["run", "--method", method, "--load", "cpu"],
+                )
+
+        self.assertNotEqual(rc, 0)
+        cleanup_dest.assert_not_called()
+        reset_source.assert_not_called()
+        start_monitor.assert_not_called()
+        start_load.assert_not_called()
+        run_migration.assert_not_called()
+        return stderr.getvalue()
+
+    def test_run_cli_blocks_docker_and_containerd_before_baseline_or_monitoring(self):
+        for runtime in ("docker", "containerd"):
+            with self.subTest(runtime=runtime):
+                cfg = deepcopy(cli.DEFAULTS)
+                cfg["runtime"] = {"type": runtime}
+
+                err = self._run_cli_expect_capability_gate(cfg)
+
+                self.assertIn("capability gate failed", err)
+                self.assertIn(f"Runtime '{runtime}' migration is not implemented", err)
+
+    def test_run_cli_blocks_unknown_runtime_before_side_effects(self):
+        cfg = deepcopy(cli.DEFAULTS)
+        cfg["runtime"] = {"type": "podman"}
+
+        err = self._run_cli_expect_capability_gate(cfg)
+
+        self.assertIn("Unsupported runtime backend: podman", err)
+
+    def test_run_cli_blocks_rootless_runc_before_side_effects(self):
+        cfg = deepcopy(cli.DEFAULTS)
+        cfg["runtime"] = {"type": "runc", "rootless": True}
+
+        err = self._run_cli_expect_capability_gate(cfg)
+
+        self.assertIn("Rootless runtime migration is not supported", err)
+
+    def test_run_cli_blocks_unknown_strategy_before_side_effects(self):
+        cfg = deepcopy(cli.DEFAULTS)
+
+        err = self._run_cli_expect_capability_gate(cfg, method="teleport")
+
+        self.assertIn("Unknown migration strategy: teleport", err)
+
+    def test_run_cli_blocks_not_implemented_strategy_before_side_effects(self):
+        cfg = deepcopy(cli.DEFAULTS)
+
+        err = self._run_cli_expect_capability_gate(cfg, method="stop-and-copy")
+
+        self.assertIn("Migration strategy 'stop-and-copy' is not implemented", err)
+
+    def test_run_cli_blocks_unsupported_criu_custom_build_before_side_effects(self):
+        cfg = deepcopy(cli.DEFAULTS)
+        cfg["criu"] = {"custom_build": "criu-clm-tcp"}
+
+        err = self._run_cli_expect_capability_gate(cfg)
+
+        self.assertIn("Configured CRIU custom_build 'criu-clm-tcp' is not supported", err)
+
     def test_precopy_run_migration_exports_shared_image_mode_by_default(self):
         cfg = deepcopy(cli.DEFAULTS)
         cfg["repo_path"] = "~/CLM"

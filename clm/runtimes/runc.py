@@ -20,6 +20,7 @@ class RuncBackend(RuntimeBackend):
     """Adapter around the current runc migration scripts."""
 
     name = "runc"
+    migration_supported = True
 
     def preflight(self, config: Optional[dict[str, Any]] = None) -> PreflightResult:
         container = ((config or {}).get("container") or {})

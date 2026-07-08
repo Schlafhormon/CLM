@@ -43,6 +43,7 @@ class RuntimeBackend(abc.ABC):
     """Interface implemented by container runtime adapters."""
 
     name: str
+    migration_supported: bool = False
 
     def __init__(self, runtime: Optional[RuntimeRef] = None):
         self.runtime = runtime or RuntimeRef(type=self.name)

@@ -1375,6 +1375,136 @@ def run_migration(cfg: dict, method: str, run_id: str, events_log: str, migrate_
     return 0 if result.ok else 1
 
 
+def validate_run_capabilities(cfg: dict, method: str):
+    # Validate the runtime/strategy/CRIU combination before run side effects.
+    from clm.core.config import legacy_env_to_migration_request
+    from clm.core.models import PreflightResult
+    from clm.migration.strategies import LegacyAdapterStrategy, canonical_strategy_name, select_strategy
+    from clm.migration.traffic import select_traffic_backend
+    from clm.runtimes import select_backend
+
+    checks = []
+    warnings = []
+    blockers = []
+    metadata = {"method": method}
+    request = None
+    strategy = None
+    backend = None
+
+    try:
+        requested_strategy = canonical_strategy_name(method)
+        checks.append({"name": "strategy: requested", "ok": True, "detail": requested_strategy})
+        metadata["strategy"] = requested_strategy
+    except Exception as exc:
+        checks.append({"name": "strategy: requested", "ok": False, "detail": str(exc)})
+        blockers.append(str(exc))
+
+    configured_strategy = (cfg.get("migration") or {}).get("strategy") or cfg.get("strategy")
+    if configured_strategy not in (None, ""):
+        try:
+            configured_canonical = canonical_strategy_name(configured_strategy)
+            checks.append({"name": "strategy: configured", "ok": True, "detail": configured_canonical})
+            metadata["configured_strategy"] = configured_canonical
+        except Exception as exc:
+            checks.append({"name": "strategy: configured", "ok": False, "detail": str(exc)})
+            blockers.append(str(exc))
+
+    try:
+        request = legacy_env_to_migration_request(cfg, method=method)
+        metadata["runtime"] = request.runtime.type
+        metadata["criu_binary"] = request.criu.binary
+    except Exception as exc:
+        checks.append({"name": "config: migration request", "ok": False, "detail": str(exc)})
+        blockers.append(f"Invalid migration config: {exc}")
+
+    try:
+        strategy = select_strategy(cfg, requested=method)
+        checks.append({"name": "strategy: selected", "ok": True, "detail": strategy.name})
+        if not isinstance(strategy, LegacyAdapterStrategy) or strategy.legacy_method not in ("precopy", "postcopy"):
+            blockers.append(f"Migration strategy '{strategy.name}' is not implemented for clm run")
+    except Exception as exc:
+        checks.append({"name": "strategy: selected", "ok": False, "detail": str(exc)})
+        blockers.append(str(exc))
+
+    try:
+        backend = select_backend(cfg)
+        checks.append({"name": "runtime: selected", "ok": True, "detail": backend.runtime.type})
+        if not bool(getattr(backend, "migration_supported", False)):
+            blockers.append(
+                f"Runtime '{backend.runtime.type}' migration is not implemented for clm run; "
+                "supported runtime is rootful runc"
+            )
+    except Exception as exc:
+        checks.append({"name": "runtime: selected", "ok": False, "detail": str(exc)})
+        blockers.append(str(exc))
+
+    if request is not None:
+        runtime = request.runtime
+        privilege_mode = str(runtime.privilege_mode or "").strip().lower()
+        if runtime.rootless or privilege_mode == "rootless":
+            blockers.append(
+                f"Rootless runtime migration is not supported by clm run "
+                f"(runtime={runtime.type}, privilege_mode={runtime.privilege_mode})"
+            )
+
+        criu_binary = str(request.criu.binary or "criu").strip()
+        criu_name = Path(criu_binary).name
+        if criu_name != "criu":
+            blockers.append(
+                f"Configured CRIU binary '{criu_binary}' is not supported by clm run; "
+                "legacy runc scripts call 'criu'"
+            )
+        if request.criu.custom_build:
+            blockers.append(
+                f"Configured CRIU custom_build '{request.criu.custom_build}' is not supported by clm run; "
+                "legacy runc scripts do not select custom CRIU builds"
+            )
+
+    if strategy is not None and backend is not None:
+        try:
+            strategy_result = strategy.preflight(cfg)
+            checks.extend(strategy_result.checks)
+            warnings.extend(strategy_result.warnings)
+            blockers.extend(strategy_result.blockers)
+            metadata.update(strategy_result.metadata)
+        except Exception as exc:
+            checks.append({"name": "strategy: preflight", "ok": False, "detail": str(exc)})
+            blockers.append(str(exc))
+
+    try:
+        traffic_result = select_traffic_backend(cfg).preflight(cfg)
+        checks.extend(traffic_result.checks)
+        warnings.extend(traffic_result.warnings)
+        blockers.extend(traffic_result.blockers)
+        if traffic_result.metadata:
+            metadata["traffic"] = traffic_result.metadata
+    except Exception as exc:
+        checks.append({"name": "traffic: selected", "ok": False, "detail": str(exc)})
+        blockers.append(str(exc))
+
+    deduped_blockers = []
+    for blocker in blockers:
+        text = str(blocker)
+        if text and text not in deduped_blockers:
+            deduped_blockers.append(text)
+    return PreflightResult(
+        checks=tuple(checks),
+        warnings=tuple(str(w) for w in warnings),
+        blockers=tuple(deduped_blockers),
+        metadata=metadata,
+    )
+
+
+def print_run_capability_failure(result) -> None:
+    # Print a concise fail-fast diagnostic for clm run.
+    print("ERROR: clm run capability gate failed.", file=sys.stderr)
+    for blocker in result.blockers:
+        print(f"- {blocker}", file=sys.stderr)
+    failed_checks = [check for check in result.checks if not bool(check.get("ok", False))]
+    for check in failed_checks:
+        print(f"- {check.get('name')}: {check.get('detail')}", file=sys.stderr)
+
+
 def copy_tree(src_dir: str, dst_dir: str) -> None:
     # Copy flat file artifacts.
 
@@ -1688,6 +1818,11 @@ def run_cli(
     env_path: str = "config/env.yaml",
     cli_argv=None,
 ) -> int:
+    capability_result = validate_run_capabilities(cfg, method)
+    if not capability_result.ok:
+        print_run_capability_failure(capability_result)
+        return 1
+
     runs_root = cfg["paths"]["runs_root"]
     logs_root = cfg["paths"]["logs_root"]
     ensure_dir(runs_root)
